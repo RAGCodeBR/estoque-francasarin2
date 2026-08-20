@@ -30,6 +30,49 @@
 - Cada produto pode possuir no máximo um marco `MIGRATION_OPENING_BALANCE`, sempre vinculado a um
   lote de importação válido e identificado como `Migração sistema legado`.
 
+## Dados mestres
+
+- Produto, categoria e local são removidos de uso por `is_active`; os serviços não oferecem delete.
+- Exclusão física de produtos, categorias e locais é bloqueada no PostgreSQL, inclusive para evitar
+  perda futura de rastreabilidade.
+- Criar ou editar produto nunca recebe nem altera saldo. Saldo pertence exclusivamente ao motor de
+  estoque.
+- SKU é normalizado e permanece protegido contra duplicidade pelo banco.
+- EAN informado deve ser um GTIN-8, 12, 13 ou 14 válido.
+- Quantidade mínima usa texto decimal exato e `NUMERIC(18,3)` no banco; números de ponto flutuante não
+  fazem parte do contrato do serviço.
+- Locais aceitam somente `STOCK` ou `CONSUMPTION`.
+- Listagens e pesquisas são paginadas no servidor, com no máximo 100 registros por chamada.
+- Fornecedor com histórico é inativado e nunca excluído; documento informado é normalizado para CNPJ.
+
+## NF-e
+
+- Somente XML é processado neste bloco; PDF não é aceito.
+- Ler e revisar XML cria apenas staging. `invoices`, `invoice_items` e estoque permanecem inalterados.
+- A descrição do item nunca basta para associação automática de produto.
+- Código exato em `supplier_product_mappings` tem precedência; EAN só resolve quando único, ativo e
+  compatível com a unidade. Qualquer outro caso exige revisão explícita.
+- Todos os itens e o fornecedor precisam estar resolvidos antes da confirmação.
+- A confirmação inteira é atômica e cada item entra pelo `receive_stock`.
+- Chave de acesso e identidade fiscal alternativa impedem NF duplicada.
+- Repetir upload do mesmo hash ou confirmação com a mesma chave não duplica efeito.
+- Criar `supplier_product_mappings` durante revisão é opt-in; conflito nunca é sobrescrito.
+
+### PDF assistido
+
+- XML continua sendo a fonte preferencial. PDF nunca é tratado como equivalente confiável ao XML.
+- Upload e extração de PDF criam somente staging `PDF`; não criam nota nem movimento.
+- Campos ausentes, ambíguos, sem fuso ou sem precisão suficiente permanecem nulos.
+- PDF sem camada de texto não recebe conteúdo inventado; fica em revisão e registra necessidade de
+  tratamento manual ou OCR futuro.
+- Fornecedor e produto encontrados por identificadores seguros são somente sugestões no PDF. Uma
+  pessoa precisa selecionar as entidades antes de `READY`.
+- Nome ou descrição semelhante nunca associa produto automaticamente.
+- A revisão humana deve completar fornecedor, número, data/hora, ao menos um item, produto, unidade,
+  quantidade e valores. Linhas descartadas são marcadas como `ignored`, não apagadas.
+- Somente `confirm_pdf_invoice` promove um PDF revisado; a confirmação continua atômica, idempotente
+  e usa `receive_stock` por item.
+
 ## Importação
 
 - Arquivos externos nunca escrevem diretamente em tabelas oficiais.

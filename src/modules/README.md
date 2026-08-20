@@ -5,15 +5,14 @@ quando tiver uso real em mais de um contexto. Módulos implementados expõem sua
 `index.ts` e não dependem de telas.
 
 - `auth`: Supabase Auth, sessão, roles e permissões headless; RLS permanece como autoridade final.
-- `products`: cadastro de produtos.
+- `products`: criação, consulta, pesquisa paginada, edição e ciclo ativo de produtos, sem saldo.
 - `inventory`: saldos e motor transacional de estoque.
-- `invoices`: notas e documentos de entrada.
-- `locations`: locais físicos de armazenamento.
-- `categories`: classificação de produtos.
-- `suppliers`: fornecedores.
+- `invoices`: XML preferencial e PDF assistido, com staging, revisão e confirmação transacional.
+- `locations`: cadastro paginado e ciclo ativo de locais `STOCK`/`CONSUMPTION`.
+- `categories`: cadastro paginado e ciclo ativo de classificações.
+- `suppliers`: cadastro paginado e ciclo ativo de fornecedores.
 - `losses`: perdas e baixas justificadas.
 - `reports`: consultas e relatórios.
 - `audit`: rastreabilidade e auditoria.
-- `data-import`: pipeline seguro de CSV/XLSX até staging, ValueMapping, validação, identificação e
-  dry-run bloqueável.
+- `data-import`: pipeline seguro de CSV/XLSX, staging, validação, dry-run e confirmação transacional.
 - `data-export`: exportações autorizadas e sanitizadas.

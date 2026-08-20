@@ -55,6 +55,15 @@ O bucket `import-files` é privado, limitado a 10 MiB e aceita apenas MIME types
 CSV/XLSX. Todas as operações de objetos exigem `ADMIN` via RLS. Caminhos e nomes de objetos não
 concedem autorização por si mesmos.
 
+O bucket `invoice-xml` também é privado e limitado a 10 MiB. `STOCK_OPERATOR` insere e lê apenas na
+pasta iniciada por seu próprio UUID; `ADMIN` pode ler todos e é a única role que remove. Policies
+validam role e autoria do caminho conjuntamente. MIME type e extensão ajudam na triagem, mas o parser
+continua validando os bytes e a estrutura antes do staging.
+
+O bucket `invoice-pdf` é privado, limitado a 15 MiB e aceita apenas `application/pdf`. Usa o mesmo
+isolamento por pasta do usuário. PDF.js lê bytes com avaliação dinâmica desabilitada; a aplicação
+limita páginas e texto extraído e nunca confia somente na extensão ou no MIME type.
+
 ## Operações críticas
 
 Validação no cliente melhora a experiência, mas não constitui controle de segurança. Atomicidade,
@@ -77,9 +86,29 @@ internamente. A função fixa `search_path`, revalida integralmente o staging e 
 módulo de importação para cadastros, mapeamentos e estoque. Novas colunas de resultado da promoção
 não recebem grants diretos de atualização para a Data API.
 
+`search_products`, `search_categories` e `search_locations` são `SECURITY INVOKER`: executam com os
+privilégios do chamador e preservam a RLS das tabelas. `anon` não recebe `EXECUTE`; usuários
+autenticados sem role recebem coleção vazia pela RLS. Cada função valida página e limita o tamanho a 100. Nenhuma função de pesquisa retorna `stock_balances`.
+
+Mutações dos três cadastros continuam usando os grants por coluna e policies administrativas já
+existentes. Os adaptadores enviam `created_by`/`updated_by` obtidos da sessão, e o banco exige que
+correspondam a `auth.uid()`. Não há grant de `DELETE`; triggers também bloqueiam exclusão física em
+ambientes administrativos.
+
 Policies restringem linhas e grants por coluna preservam autoria e datas de criação. Histórico e
 auditoria não possuem mutações concedidas à Data API; `stock_movements` e `audit_logs` mantêm também
 triggers contra edição e exclusão.
+
+`stage_nfe_xml`, `review_nfe_import` e `confirm_nfe_import` concedem `EXECUTE` somente a
+`authenticated`, mas exigem `ADMIN` ou `STOCK_OPERATOR` ativo internamente. Operadores só atuam nos
+próprios stagings. Nenhuma delas confia em nomes de produto ou em metadados de usuário. A confirmação
+usa lock transacional, unicidade fiscal e chaves determinísticas do motor de estoque; não há grant de
+mutação direta nas tabelas de staging.
+
+As RPCs de PDF aplicam a mesma autorização. `stage_pdf_invoice` guarda somente extração e sugestões;
+`review_pdf_invoice` exige decisões explícitas e autoria; `confirm_pdf_invoice` rejeita staging sem
+revisão humana completa. O núcleo de confirmação XML não é exposto depois da especialização por
+fonte, impedindo que um PDF seja confirmado pela RPC de XML.
 
 ## Dependências
 

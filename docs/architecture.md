@@ -10,6 +10,12 @@ headless com Supabase Auth e autorização efetiva no PostgreSQL por roles e RLS
 o motor de estoque como funções PostgreSQL transacionais, sem interface e sem escrita direta do
 frontend nas tabelas de saldo ou histórico. O Bloco 6 conecta o staging ao cadastro oficial por uma
 confirmação administrativa, atômica e idempotente de produtos.
+O Bloco 7 implementa os módulos headless de produtos, categorias e locais com serviços de domínio,
+ports, adaptadores Supabase e pesquisa paginada no PostgreSQL.
+O Bloco 8 adiciona fornecedores e o recebimento headless de NF-e XML, mantendo leitura/revisão em
+staging e fazendo nota, itens e entradas de estoque nascerem juntos somente na confirmação.
+O Bloco 9 mantém XML como fonte preferencial e acrescenta PDF como importação assistida: extração
+conservadora, evidências, sugestões e revisão humana obrigatória antes da confirmação.
 
 ## Organização
 
@@ -54,6 +60,33 @@ auditoria na mesma transação. Nenhuma regra crítica depende de React.
 confirmações, revalida o preview, cria ou associa entidades, chama o núcleo do motor para quantidades
 e conclui lote, linhas e auditoria na mesma transação. O adaptador Supabase público não usa
 credenciais administrativas; a autorização efetiva permanece no banco.
+
+Os módulos `products`, `categories` e `locations` seguem a mesma direção de dependências:
+`application → ports ← infrastructure`. Serviços normalizam e validam entradas; repositórios
+Supabase traduzem nomes do domínio para o banco e continuam sujeitos à RLS. Os serviços não expõem
+exclusão física. O tipo `Product` não contém saldo, e nenhum input ou record de produto possui campo
+de quantidade de estoque.
+
+`PageRequest` é compartilhado pelos três contextos porque existe uso concreto comum. A página padrão
+possui 25 itens e o limite rígido é 100. As RPCs de pesquisa devolvem somente a página solicitada e o
+total, sem carregar a coleção inteira no navegador.
+
+O módulo `invoices` separa parsers, casos de uso, ports e adaptadores Supabase. O parser XML recusa
+DOCTYPE, entidades, stylesheet, encoding inválido, arquivo acima do limite e números que exigiriam
+arredondamento. `stage_nfe_xml` persiste somente `invoice_imports`/`invoice_import_items` e resolve
+produto por `supplier_product_mappings` ou EAN inequívoco e compatível com a unidade. Descrição nunca
+produz associação automática. `review_nfe_import` registra decisões explícitas; somente
+`confirm_nfe_import` cria a nota oficial e chama `receive_stock` para cada item na mesma transação.
+
+O parser PDF depende de `PdfTextExtractor`, não do estoque. A implementação PDF.js desabilita
+avaliação dinâmica, limita bytes, páginas e texto, preserva página/evidência e aceita ausência de
+camada textual sem inventar conteúdo. A normalização só reconhece rótulos e linhas inequívocas;
+qualquer lacuna gera issue. `stage_pdf_invoice` nunca resolve automaticamente fornecedor ou produto:
+correspondências seguras ficam apenas como sugestões. `review_pdf_invoice` permite completar ou
+ignorar linhas explicitamente e `confirm_pdf_invoice` exige revisão humana completa.
+
+O módulo `suppliers` segue o mesmo desenho dos demais dados mestres, incluindo paginação no servidor,
+normalização de CNPJ e ciclo de inativação/reativação. Exclusão física não integra o contrato.
 
 ## Cliente Supabase
 

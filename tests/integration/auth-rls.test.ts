@@ -335,7 +335,7 @@ describe('autenticação, roles e RLS', () => {
       order by class.relname;
     `);
 
-    expect(rows.rows).toHaveLength(16);
+    expect(rows.rows).toHaveLength(18);
     expect(rows.rows.every(({ policy_count }) => policy_count > 0)).toBe(true);
   });
 
@@ -373,5 +373,98 @@ describe('autenticação, roles e RLS', () => {
       `select name from storage.objects where bucket_id = 'import-files';`,
     );
     expect(adminObjects).toEqual([{ name: 'admin.csv' }]);
+  });
+
+  it('protege XML de NF-e por role e pasta do proprietário', async () => {
+    const bucket = await database.query<{ public: boolean; file_size_limit: number }>(`
+      select public, file_size_limit from storage.buckets where id = 'invoice-xml';
+    `);
+    expect(bucket.rows).toEqual([{ public: false, file_size_limit: 10_485_760 }]);
+
+    await execAs(
+      'authenticated',
+      ids.operator,
+      `insert into storage.objects (bucket_id, name)
+       values ('invoice-xml', '${ids.operator}/arquivo.xml');`,
+    );
+    await expect(
+      execAs(
+        'authenticated',
+        ids.operator,
+        `insert into storage.objects (bucket_id, name)
+         values ('invoice-xml', '${ids.admin}/indevido.xml');`,
+      ),
+    ).rejects.toThrow(/row-level security/i);
+    await expect(
+      execAs(
+        'authenticated',
+        ids.viewer,
+        `insert into storage.objects (bucket_id, name)
+         values ('invoice-xml', '${ids.viewer}/viewer.xml');`,
+      ),
+    ).rejects.toThrow(/row-level security/i);
+
+    expect(
+      await queryAs<{ name: string }>(
+        'authenticated',
+        ids.operator,
+        `select name from storage.objects where bucket_id = 'invoice-xml';`,
+      ),
+    ).toEqual([{ name: `${ids.operator}/arquivo.xml` }]);
+    expect(
+      await queryAs<{ name: string }>(
+        'authenticated',
+        ids.admin,
+        `select name from storage.objects where bucket_id = 'invoice-xml';`,
+      ),
+    ).toEqual([{ name: `${ids.operator}/arquivo.xml` }]);
+    await execAs(
+      'authenticated',
+      ids.operator,
+      `delete from storage.objects where bucket_id = 'invoice-xml';`,
+    );
+    expect(
+      await queryAs<{ name: string }>(
+        'authenticated',
+        ids.admin,
+        `select name from storage.objects where bucket_id = 'invoice-xml';`,
+      ),
+    ).toEqual([{ name: `${ids.operator}/arquivo.xml` }]);
+  });
+
+  it('mantém PDF fiscal privado e restrito à pasta do operador', async () => {
+    const bucket = await database.query<{ public: boolean; file_size_limit: number }>(`
+      select public, file_size_limit from storage.buckets where id = 'invoice-pdf';
+    `);
+    expect(bucket.rows).toEqual([{ public: false, file_size_limit: 15_728_640 }]);
+
+    await execAs(
+      'authenticated',
+      ids.operator,
+      `insert into storage.objects (bucket_id, name)
+       values ('invoice-pdf', '${ids.operator}/nota.pdf');`,
+    );
+    await expect(
+      execAs(
+        'authenticated',
+        ids.operator,
+        `insert into storage.objects (bucket_id, name)
+         values ('invoice-pdf', '${ids.admin}/indevido.pdf');`,
+      ),
+    ).rejects.toThrow(/row-level security/i);
+    expect(
+      await queryAs<{ name: string }>(
+        'authenticated',
+        ids.viewer,
+        `select name from storage.objects where bucket_id = 'invoice-pdf';`,
+      ),
+    ).toEqual([]);
+    expect(
+      await queryAs<{ name: string }>(
+        'authenticated',
+        ids.operator,
+        `select name from storage.objects where bucket_id = 'invoice-pdf';`,
+      ),
+    ).toEqual([{ name: `${ids.operator}/nota.pdf` }]);
   });
 });

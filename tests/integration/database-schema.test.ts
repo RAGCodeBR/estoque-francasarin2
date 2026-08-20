@@ -120,6 +120,8 @@ describe('migrations do esquema principal', () => {
       'external_entity_mappings',
       'import_batches',
       'import_rows',
+      'invoice_import_items',
+      'invoice_imports',
       'invoice_items',
       'invoices',
       'locations',
@@ -149,9 +151,16 @@ describe('migrations do esquema principal', () => {
       order by table_name, column_name;
     `);
 
-    expect(result.rows).toHaveLength(4);
+    expect(result.rows).toHaveLength(5);
     expect(result.rows).toEqual(
       expect.arrayContaining([
+        expect.objectContaining({
+          table_name: 'invoice_import_items',
+          column_name: 'quantity',
+          data_type: 'numeric',
+          numeric_precision: 18,
+          numeric_scale: 3,
+        }),
         expect.objectContaining({
           table_name: 'invoice_items',
           column_name: 'quantity',
@@ -196,7 +205,8 @@ describe('migrations do esquema principal', () => {
           'product_type', 'unit_type', 'location_type', 'movement_type',
           'invoice_status', 'import_status', 'import_row_validation_state',
           'product_import_mode', 'existing_product_import_strategy',
-          'master_quantity_import_strategy', 'import_row_promotion_action'
+          'master_quantity_import_strategy', 'import_row_promotion_action',
+          'invoice_import_status', 'invoice_item_match_source', 'invoice_import_source'
         )
       group by enum_type.typname;
     `);
@@ -229,6 +239,16 @@ describe('migrations do esquema principal', () => {
         'RECONCILE_TO_EXTERNAL_QUANTITY',
       ],
       import_row_promotion_action: ['CREATED', 'ASSOCIATED', 'UPDATED', 'IGNORED'],
+      invoice_import_status: [
+        'UPLOADED',
+        'PENDING_REVIEW',
+        'READY',
+        'CONFIRMED',
+        'FAILED',
+        'CANCELLED',
+      ],
+      invoice_item_match_source: ['NONE', 'SUPPLIER_PRODUCT_CODE', 'EAN', 'MANUAL'],
+      invoice_import_source: ['XML', 'PDF'],
     });
     expect(enums.movement_type).toEqual([
       'PURCHASE_ENTRY',
@@ -296,7 +316,7 @@ describe('migrations do esquema principal', () => {
       order by class.relname;
     `);
 
-    expect(rlsResult.rows).toHaveLength(16);
+    expect(rlsResult.rows).toHaveLength(18);
 
     const anonymousPrivileges = await database.query<{ table_name: string }>(`
       select table_name
@@ -434,9 +454,15 @@ describe('integridade e histórico', () => {
     `);
   });
 
-  it('restringe exclusão de entidades referenciadas pelo histórico', async () => {
+  it('proíbe exclusão física e exige inativação de dados mestres', async () => {
     await expect(
       database.exec(`delete from public.products where id = '${ids.product}';`),
-    ).rejects.toThrow(/foreign key constraint/i);
+    ).rejects.toThrow(/cannot be deleted; change is_active instead/i);
+    await expect(
+      database.exec(`delete from public.categories where id = '${ids.category}';`),
+    ).rejects.toThrow(/cannot be deleted; change is_active instead/i);
+    await expect(
+      database.exec(`delete from public.locations where id = '${ids.location}';`),
+    ).rejects.toThrow(/cannot be deleted; change is_active instead/i);
   });
 });

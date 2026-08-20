@@ -20,6 +20,8 @@ staging, validação, autorização e o motor transacional:
    estoque, bloqueios de concorrência, snapshots de saldo e auditoria.
 8. `20260820210000_confirm_product_imports.sql`: modos de importação de produtos, promoção
    transacional do staging, reconciliação explícita e relatório final.
+9. `20260820220000_add_master_data_search.sql`: pesquisa paginada de produtos, categorias e locais e
+   bloqueio explícito de exclusão física.
 
 A promoção definitiva de produtos foi implementada sem telas. O acesso pela Data API segue uma
 matriz explícita de roles e permanece default-deny quando não existe policy permissiva.
@@ -86,6 +88,22 @@ informado, sem impor formato antes da análise dos dados legados.
 
 A chave composta `(supplier_id, supplier_product_code)` associa o código usado por cada fornecedor
 ao produto interno. Não há `legacy_id` em `products`.
+
+### Pesquisa e ciclo de vida
+
+`search_products`, `search_categories` e `search_locations` recebem página, tamanho e filtros. O
+tamanho máximo é 100. A resposta JSON contém `items`, `page`, `page_size` e `total`; o total permanece
+correto mesmo quando a página solicitada não possui itens.
+
+Produtos pesquisam por trecho de nome, SKU ou EAN e filtram categoria, tipo, unidade e estado ativo.
+Categorias pesquisam nome e estado; locais pesquisam nome, tipo e estado. Todas as funções são
+`SECURITY INVOKER` e, portanto, não contornam RLS.
+
+`get_product` consulta um produto por UUID. Tanto essa função quanto a pesquisa serializam
+`minimum_quantity` como texto decimal, evitando perda de precisão no JavaScript.
+
+Triggers em `products`, `categories` e `locations` rejeitam `DELETE` e orientam alteração de
+`is_active`. Os serviços oferecem apenas inativação e reativação.
 
 ## Notas fiscais
 
@@ -216,9 +234,50 @@ e opções retorna esse relatório com `applied = false`; opções diferentes s�
 estado anterior/novo e metadados. Assim como movimentos, logs de auditoria possuem triggers contra
 edição e exclusão. A captura automática de eventos ainda não foi criada.
 
+## NF-e XML e fornecedores
+
+`invoice_imports` e `invoice_import_items` são staging próprio para NF-e. Preservam hash SHA-256,
+arquivo, identificação fiscal, fornecedor extraído, dados exatos dos itens, erros, correspondências,
+decisões manuais, autoria e relatório final. Possuem RLS forçada e não concedem mutação direta pela
+Data API. `STOCK_OPERATOR` enxerga somente seus próprios uploads; `ADMIN` enxerga todos; `VIEWER` e
+anônimo não acessam o staging.
+
+O hash do arquivo é único. A chave de acesso de 44 dígitos também é única no staging e em `invoices`.
+Quando não existe chave, o fallback fornecedor/número/série impede duplicidade. O staging pode ficar
+em `PENDING_REVIEW`; ele só alcança `READY` quando fornecedor, todos os produtos, unidades e erros
+estão resolvidos.
+
+`confirm_nfe_import` bloqueia concorrência, revalida o lote, cria `invoices` com status `CONFIRMED`,
+cria `invoice_items`, aplica somente os mapeamentos explicitamente aprovados e chama `receive_stock`
+com chave determinística por item. Uma falha em qualquer linha reverte nota, itens, mappings,
+movimentos, saldos, auditoria e status. O replay com a mesma chave devolve o relatório persistido com
+`applied = false`; outra chave é conflito.
+
+Fornecedores são pesquisados por `search_suppliers`, paginada em no máximo 100 linhas. Eles são
+inativados, nunca apagados. A identificação da NF-e busca CNPJ normalizado, tolerando pontuação no
+cadastro sem enfraquecer a unicidade documental.
+
+### Extensão assistida para PDF
+
+`invoice_import_source` distingue `XML` e `PDF` no mesmo staging. As colunas fiscais e de item podem
+ser nulas durante extração assistida; as tabelas oficiais continuam exigindo os campos completos.
+`extraction_metadata`, `raw_extraction` e `raw_item_data` preservam parser, páginas, texto e evidência.
+`suggested_supplier_id` e `suggested_product_id` não equivalem a resolução: para PDF,
+`resolved_supplier_id`/`resolved_product_id` continuam nulos até revisão humana.
+
+`stage_pdf_invoice` é idempotente por hash e sempre produz `PENDING_REVIEW`, mesmo quando todos os
+campos parecem legíveis. `review_pdf_invoice` registra `reviewed_at`/`reviewed_by`, permite criar itens
+manuais e marcar extrações incorretas como `ignored`. O lote só chega a `READY` quando o cabeçalho e
+ao menos um item não ignorado estão completos, com produto ativo e unidade compatível.
+
+`confirm_pdf_invoice` é uma RPC separada da confirmação XML. Ela revalida fonte, revisão, campos,
+itens, duplicidade e idempotência; ignora somente linhas explicitamente descartadas e cria nota,
+itens, movimentos, saldo e auditoria em uma transação. A função interna renomeada
+`confirm_invoice_import_core` permanece sem grant para a Data API.
+
 ## Data API e RLS
 
-Todas as 16 tabelas possuem RLS e pelo menos uma policy explícita. `anon` permanece sem privilégios
+Todas as 18 tabelas possuem RLS e pelo menos uma policy explícita. `anon` permanece sem privilégios
 de tabela. `authenticated` recebe apenas grants compatíveis com a matriz abaixo; toda policy exige
 perfil ativo e role apropriada.
 
@@ -247,6 +306,15 @@ Quando o schema do Supabase Storage está disponível, a migration cria/atualiza
 `import-files`, com limite de 10 MiB e MIME types de CSV/XLSX. Policies de objetos permitem
 `SELECT`, `INSERT`, `UPDATE` e `DELETE` apenas a `ADMIN`. O bucket nunca é público.
 
+NF-e usa o bucket privado `invoice-xml`, também limitado a 10 MiB e somente XML. `ADMIN` e
+`STOCK_OPERATOR` podem inserir exclusivamente sob a pasta cujo primeiro segmento é seu UUID; o
+operador lê apenas os próprios objetos. Exclusão é administrativa para não apagar documento de
+entrada silenciosamente. O caminho pode ser associado ao staging em `original_file_path`.
+
+PDF fiscal usa `invoice-pdf`, privado, limitado a 15 MiB e MIME `application/pdf`. Operadores gravam
+e leem apenas sua pasta; exclusão continua administrativa. O objeto usa caminho determinístico pelo
+hash e, em replay, o conteúdo existente é novamente verificado antes de ser reutilizado.
+
 ## Índices e integridade
 
 Além das PKs e uniques, existem índices para FKs e consultas previstas por status, hash, EAN,
@@ -274,3 +342,17 @@ de chave, rollback forçado, estoque negativo e usuários sem autorização.
 `tests/integration/product-import-confirmation.test.ts` promove uma fixture principal de 220 linhas e
 cobre replay, associação, atualização opt-in, quantidade mestre ignorada, reconciliação por
 movimento, rollback intermediário, conflitos, classificação obrigatória e autorização.
+
+`tests/integration/master-data-search.test.ts` cria 650 produtos e valida páginas cheias e vazias,
+total, pesquisa por SKU, filtros, categorias, locais, limite de 100, RLS, autoria, ausência de saldo
+no payload e preservação do saldo durante edição cadastral.
+
+`tests/integration/nfe-receiving.test.ts` cobre staging sem efeito oficial, associação por código e
+EAN, proibição de merge por descrição, revisão manual, criação opt-in de mapping, confirmação,
+duplicidade, idempotência, rollback integral e RLS. O parser possui testes próprios para extração,
+precisão, limites e XML hostil.
+
+`tests/integration/pdf-invoice-import.test.ts` cobre campos ausentes, leitura parcial, fornecedor e
+produto desconhecidos, ausência de associação por descrição, revisão obrigatória, separação entre
+RPCs XML/PDF, confirmação por `receive_stock`, replay e duplicidade. Testes unitários cobrem assinatura
+inválida, PDF quebrado, ausência de texto e extração conservadora com evidência de página.

@@ -2,43 +2,262 @@
 
 ## Contexto
 
-O sistema legado contém mais de 600 produtos, mas nomes de colunas, tabelas, IDs, relacionamentos,
-tipos e formatos de exportação ainda são desconhecidos. A arquitetura não acoplará o domínio ao
-formato legado.
+O sistema legado contém mais de 600 produtos, mas nomes de tabelas, colunas, IDs, relacionamentos,
+tipos e formato de exportação são desconhecidos. A implementação não contém aliases de cabeçalhos
+legados e não tenta adivinhar que `COD`, `CODIGO` ou qualquer outro nome significa SKU.
 
-## Pipeline obrigatório
+O Bloco 2 implementa leitura, descoberta de cabeçalhos, staging e dry-run. O Bloco 3 amplia esse
+domínio com ValueMapping configurável, validação estruturada, categorias candidatas, identificação
+segura de produtos e uma barreira de confirmação. A promoção para `products` e a geração de
+movimentos de saldo continuam fora do escopo.
 
-1. **Ingestão:** recebe arquivo ou payload original, calcula checksum e cria um lote imutável.
-2. **Staging:** persiste os registros brutos isolados das tabelas oficiais com `import_batch_id` e
-   número da linha de origem.
-3. **Mapeamento:** associa campos externos a um modelo canônico versionado.
-4. **Normalização:** trata espaços, encoding, unidades, números, datas e valores ausentes sem perder
-   o valor original.
-5. **Validação:** classifica erros e avisos por linha e por campo.
-6. **Preview:** exibe totais, amostras, mudanças propostas e impactos antes de qualquer confirmação.
-7. **Conflitos:** exige regra explícita para duplicidades, referências ausentes e correspondências
-   ambíguas; nenhuma decisão crítica é silenciosa.
-8. **Confirmação:** usuário autorizado aprova uma versão estável do lote.
-9. **Aplicação:** uma operação idempotente promove dados válidos de forma transacional.
-10. **Auditoria:** registra autor, datas, arquivo, checksum, mapeamento, decisões, resultados e erros.
+## Fluxo implementado
 
-## Independência de formato
+```text
+arquivo CSV/XLSX
+  → validação de tipo e limites
+  → leitura segura
+  → SHA-256
+  → descoberta de cabeçalhos
+  → detecção de duplicidade do arquivo
+  → import_batches + import_rows (staging atômico)
+  → ColumnMapping explícito
+  → ValueMapping configurável
+  → normalização e validação estruturada
+  → consulta somente-leitura de categorias e identidades
+  → candidatos, sugestões, classificação e conflitos
+  → dry-run persistido somente no staging
+  → barreira de confirmação
+  → promoção futura pelo motor transacional
+```
 
-Adaptadores de entrada serão responsáveis por CSV, XLSX, JSON ou outro formato comprovadamente
-necessário. Todos produzem o mesmo modelo canônico. Mapeamentos terão versão e poderão ser salvos por
-origem sem inserir regras específicas do legado nas tabelas de domínio.
+Não existe contrato de escrita para `products`, `stock_balances` ou `stock_movements` no módulo de
+importação. O port `ImportStagingRepository` oferece somente operações sobre lote, linhas e análise
+de staging. Suas implementações devem tornar atômicos `createBatchWithRows` e `saveDryRun`.
 
-## Estoque inicial e correções
+## Estrutura do módulo
 
-Quantidade importada nunca atualiza saldo diretamente. A aplicação do lote cria movimentos de carga
-inicial ou ajuste, com referência ao `import_batch_id`. Reprocessar a mesma chave idempotente não
-duplica movimentos. Após confirmação, correções criam movimentos compensatórios e um novo lote; não
-alteram nem apagam o histórico anterior.
+- `domain`: tipos canônicos, `ColumnMapping`, normalização, validação e erros.
+- `parsers`: leitores CSV/XLSX e descoberta de cabeçalhos.
+- `application`: casos de uso `stageImportFile` e `runImportDryRun`.
+- `ports`: contratos para staging e consulta somente-leitura de produtos existentes.
+- `config`: limites seguros e configuráveis.
 
-## Critérios antes da migração real
+O módulo não importa React e sua API pública está em `src/modules/data-import/index.ts`.
 
-- Obter uma exportação representativa e documentar encoding, delimitadores, fórmulas e unidades.
-- Inventariar chaves, duplicidades, campos obrigatórios e qualidade dos dados.
-- Definir reconciliação por contagens, totais e amostragem.
-- Ensaiar em ambiente isolado com backup e plano de reversão.
-- Obter aprovação explícita do preview e do relatório de reconciliação.
+## Mapeamento de colunas
+
+Toda coluna descoberta exige uma decisão explícita. Ela deve apontar para um campo canônico ou para
+`IGNORE`. Não mapear uma coluna é erro; isso impede que novos campos do legado sejam descartados
+silenciosamente.
+
+```ts
+const mapping: ColumnMapping[] = [
+  { sourceColumn: 'COD', targetField: 'sku' },
+  { sourceColumn: 'DESCRICAO', targetField: 'name' },
+  { sourceColumn: 'COD_BARRAS', targetField: 'ean' },
+  { sourceColumn: 'ID_ANTIGO', targetField: 'external_id' },
+  { sourceColumn: 'SALDO_ATUAL', targetField: 'opening_quantity' },
+  { sourceColumn: 'ESTOQUE_MINIMO', targetField: 'minimum_quantity' },
+  { sourceColumn: 'UNID', targetField: 'unit' },
+  { sourceColumn: 'GRUPO', targetField: 'category' },
+  { sourceColumn: 'TIPO', targetField: 'product_type' },
+  { sourceColumn: 'PRECO_COMPRA', targetField: 'IGNORE' },
+];
+```
+
+Os nomes acima são apenas um mapeamento fornecido pelo usuário. Eles não estão codificados nos
+parsers. Os destinos obrigatórios são `sku`, `name`, `unit`, `category` e `product_type`;
+`ean`, `external_id`, `opening_quantity` e `minimum_quantity` são opcionais.
+
+Um destino só pode receber uma coluna. Cabeçalhos vazios, duplicados por caixa/Unicode ou não
+decididos impedem o processamento.
+
+## Segurança dos arquivos
+
+### CSV
+
+O parser usa uma máquina de estados e não executa conteúdo. Ele:
+
+- detecta `,`, `;`, tab ou `|`, com opção de seleção explícita;
+- suporta campos entre aspas, aspas escapadas e quebras de linha internas;
+- rejeita aspas não fechadas, caracteres após fechamento e colunas excedentes;
+- usa decoding fatal e suporta UTF-8, UTF-16 LE/BE por BOM e Windows-1252 explícito;
+- rejeita bytes nulos, encoding inválido e valores semelhantes a fórmulas;
+- preserva células vazias como `null`.
+
+### XLSX
+
+O leitor não usa engine de cálculo. Antes de descompactar, inspeciona o diretório central ZIP e
+rejeita:
+
+- assinatura, diretório ou XML inválido;
+- ZIP multipartes, ZIP64, entradas criptografadas e compressão desconhecida;
+- caminhos absolutos, `..`, nomes duplicados e encoding inválido;
+- quantidade de entradas, tamanho expandido, tamanho por entrada ou taxa de compressão acima dos
+  limites;
+- `DOCTYPE` e entidades XML;
+- macros, ActiveX, objetos incorporados, links externos e conexões;
+- células com fórmulas, mesmo quando o arquivo contém resultado calculado em cache;
+- erros de célula, colunas excedentes e dados além do cabeçalho;
+- múltiplas planilhas com dados sem seleção explícita.
+
+Strings compartilhadas e inline, números, booleanos e datas textuais são lidos como texto. Nenhum
+macro, fórmula ou conteúdo ativo é executado.
+
+Arquivos `.xls` binários não são aceitos.
+
+## Limites padrão
+
+| Limite                    |     Padrão |
+| ------------------------- | ---------: |
+| Arquivo                   |     10 MiB |
+| Linhas de dados           |     10.000 |
+| Colunas                   |        200 |
+| Caracteres por célula     |     10.000 |
+| Entradas internas XLSX    |      5.000 |
+| XLSX expandido total      |     50 MiB |
+| Entrada XLSX expandida    |     25 MiB |
+| Taxa máxima de compressão |      200:1 |
+| Chunk de staging          | 500 linhas |
+
+Todos são configuráveis, validados como inteiros positivos e aplicados novamente aos bytes
+efetivamente lidos. Os padrões acomodam a migração esperada de 600 produtos sem permitir arquivos
+arbitrariamente grandes.
+
+## Hash e repetição
+
+O SHA-256 é calculado sobre os bytes originais antes do parsing. O pipeline consulta o staging por
+hash e bloqueia repetição. Reprocessar exige `allowDuplicateOfBatchId` igual ao lote original.
+
+A migration do Bloco 2 adiciona `duplicate_of_batch_id` e um índice único parcial. Isso também
+protege contra concorrência: lotes ativos/originais com o mesmo hash não podem ser criados em
+paralelo. Reprocessamentos autorizados mantêm referência ao lote anterior.
+
+## Staging e rastreabilidade
+
+`import_batches` passa a guardar tamanho do arquivo, cabeçalhos detectados, opções do parser,
+mapeamento, versão, resumo de dry-run e referência de duplicidade. `import_rows` recebe ação do
+dry-run e espaço para hash da linha.
+
+O dado original permanece em `raw_data`. O mapeamento nunca o substitui; resultados vão para
+`normalized_data`, `validation_errors`, `validation_status`, `dry_run_action` e
+`resolved_entity_id`.
+
+## Normalização
+
+- Unicode é normalizado e espaços externos/internos são tratados.
+- SKU é normalizado para caixa alta para comparação, sem conversão numérica que removeria zeros.
+- Unidades e tipos usam `ValueMapping` configurável. O projeto fornece padrões iniciais, mas o lote
+  pode acrescentar ou substituir aliases sem alterar código.
+- Quantidades são processadas como texto decimal exato e emitidas com três casas.
+- Quantidade atual e quantidade mínima rejeitam negativos, mais de 15 dígitos inteiros e mais de
+  três casas; não existe arredondamento silencioso nem uso de `FLOAT`.
+- EAN aceita somente GTIN-8, GTIN-12, GTIN-13 ou GTIN-14 com dígito verificador GS1 válido.
+- Valores vazios obrigatórios e aliases desconhecidos geram erros por campo.
+
+Exemplo de configuração, independente dos nomes das colunas:
+
+```ts
+const valueMappings = {
+  unit: [
+    { sourceValue: 'UND', targetValue: 'UN' },
+    { sourceValue: 'KGS', targetValue: 'KG' },
+  ],
+  productType: [
+    { sourceValue: 'B', targetValue: 'RAW' },
+    { sourceValue: '2', targetValue: 'FRACTIONATED' },
+  ],
+};
+```
+
+Configurações contraditórias para o mesmo valor normalizado são rejeitadas; o sistema não escolhe
+uma conversão silenciosamente.
+
+## Categorias
+
+Uma categoria encontrada por nome normalizado é reutilizada. Nenhuma correspondência produz uma
+`CategoryCandidate` em estado `WARNING`; mais de uma correspondência produz `CONFLICT`. A criação
+da candidata precisa ser aprovada explicitamente e continua sem ocorrer durante o dry-run.
+
+## Identificação segura de produtos
+
+O port somente-leitura retorna evidências com a prioridade semântica:
+
+1. `external_entity_mappings` para o sistema de origem e ID externo;
+2. SKU exato normalizado;
+3. EAN exato e previamente validado;
+4. outro identificador inequívoco fornecido por uma integração futura.
+
+Evidências seguras que apontam para produtos diferentes formam conflito crítico, mesmo que uma
+delas tenha prioridade maior. Isso evita ocultar corrupção de identificadores. Descrição semelhante
+gera apenas `ProductSuggestion`, estado `WARNING` e ação `NEW`; nunca preenche
+`resolved_entity_id` e nunca executa merge automático.
+
+## Problemas estruturados
+
+Cada problema contém `rowNumber`, `field`, `value`, `problem`, `suggestedCorrection`, `code` e
+`severity`. Assim, a futura interface pode apresentar linha, campo, valor original, motivo e uma
+correção acionável sem reconstruir mensagens a partir de texto livre.
+
+## Dry-run
+
+O dry-run consulta categorias e produtos através de ports somente-leitura. Ele não grava entidades
+oficiais. Apenas o resultado da análise pode ser persistido no staging.
+
+O resumo contém exatamente:
+
+- `TOTAL`: todas as linhas após o cabeçalho;
+- `VALID`: `NEW + UPDATE_CANDIDATE`;
+- `INVALID`: linhas no estado `ERROR`;
+- `NEW`: SKU válido sem produto existente;
+- `UPDATE_CANDIDATE`: SKU correspondente com diferenças ou quantidade inicial informada;
+- `CONFLICT`: SKU repetido no arquivo, correspondência ambígua ou resolução inválida;
+- `IGNORED`: linha vazia, decisão explícita de ignorar ou registro idêntico ao existente.
+
+Invariante: `TOTAL = VALID + INVALID + CONFLICT + IGNORED`.
+
+O estado por linha é separado da ação:
+
+- `VALID`: linha importável sem ressalvas;
+- `WARNING`: linha importável que exige atenção, como categoria candidata ou nome semelhante;
+- `ERROR`: valor obrigatório ausente, EAN inválido, quantidade negativa ou ValueMapping ausente;
+- `CONFLICT`: identificadores contraditórios, duplicidade ou decisão inválida;
+- `IGNORED`: linha vazia, decisão explícita ou registro idêntico.
+
+Quantidade inicial em `UPDATE_CANDIDATE` é apenas uma proposta. Quando a promoção for implementada,
+ela deverá criar movimento `MIGRATION_OPENING_BALANCE`; nunca atualizar saldo diretamente.
+
+## Resolução de conflitos
+
+O domínio aceita decisões rastreáveis por número da linha:
+
+- `IGNORE`;
+- `REPLACE_SKU`, seguido de nova normalização, verificação de duplicidade e consulta;
+- `USE_EXISTING`, aceito somente quando o produto escolhido corresponde ao SKU normalizado.
+
+O dry-run é recalculado após as decisões. Mais de uma resolução para a mesma linha ou uma referência
+incompatível permanece como conflito.
+
+Categorias inexistentes usam decisão separada por nome normalizado. A lista
+`approvedCategoryCreations` aprova somente a futura criação; não grava a categoria no dry-run.
+
+## Confirmação e promoção
+
+`assertImportConfirmable` é uma barreira de domínio, não uma operação de promoção. Ela rejeita lotes
+com qualquer linha `ERROR` ou `CONFLICT` e também rejeita candidaturas de categoria não aprovadas.
+Avisos de nome semelhante não fazem merge: a linha permanece `NEW` para uma decisão humana.
+
+Promoção para tabelas oficiais permanece deliberadamente bloqueada neste bloco. Ela só deve ser
+implementada quando o motor de estoque puder garantir transação, idempotência, movimentos de
+abertura e compensações. O lote, os dois mapeamentos e o dry-run preservam os dados necessários para
+essa etapa futura.
+
+## Testes
+
+Os testes cobrem CSV e XLSX válidos, descoberta de cabeçalhos arbitrários, `IGNORE`, encoding,
+arquivos inválidos, fórmulas, limites, compressão suspeita, múltiplas planilhas, hash duplicado,
+normalização decimal, aliases padrão e customizados, EAN, quantidade mínima, problemas estruturados,
+categorias candidatas e sua aprovação, identificação por ID externo/SKU/EAN, sugestões por nome sem
+merge, identificadores contraditórios, barreira de confirmação e resolução por substituição de SKU.
+As migrations também são executadas integralmente em PostgreSQL embutido.

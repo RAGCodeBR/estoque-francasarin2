@@ -186,7 +186,7 @@ describe('migrations do esquema principal', () => {
       where namespace.nspname = 'public'
         and enum_type.typname in (
           'product_type', 'unit_type', 'location_type', 'movement_type',
-          'invoice_status', 'import_status'
+          'invoice_status', 'import_status', 'import_row_validation_state'
         )
       group by enum_type.typname;
     `);
@@ -211,6 +211,7 @@ describe('migrations do esquema principal', () => {
         'FAILED',
         'CANCELLED',
       ],
+      import_row_validation_state: ['VALID', 'WARNING', 'ERROR', 'CONFLICT', 'IGNORED'],
     });
     expect(enums.movement_type).toEqual([
       'PURCHASE_ENTRY',
@@ -222,6 +223,49 @@ describe('migrations do esquema principal', () => {
       'FRACTIONATION',
       'MIGRATION_OPENING_BALANCE',
     ]);
+  });
+
+  it('persiste regras e resultados de validação exclusivamente no staging', async () => {
+    const result = await database.query<{
+      table_name: string;
+      column_name: string;
+      data_type: string;
+      udt_name: string;
+    }>(`
+      select table_name, column_name, data_type, udt_name
+      from information_schema.columns
+      where table_schema = 'public'
+        and (
+          (table_name = 'import_batches' and column_name in (
+            'value_mapping', 'value_mapping_version', 'approved_category_creations'
+          ))
+          or
+          (table_name = 'import_rows' and column_name in (
+            'validation_state', 'validation_suggestions', 'category_candidate'
+          ))
+        )
+      order by table_name, column_name;
+    `);
+
+    expect(result.rows).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ table_name: 'import_batches', column_name: 'value_mapping' }),
+        expect.objectContaining({
+          table_name: 'import_batches',
+          column_name: 'approved_category_creations',
+        }),
+        expect.objectContaining({
+          table_name: 'import_rows',
+          column_name: 'validation_state',
+          udt_name: 'import_row_validation_state',
+        }),
+        expect.objectContaining({
+          table_name: 'import_rows',
+          column_name: 'validation_suggestions',
+        }),
+        expect.objectContaining({ table_name: 'import_rows', column_name: 'category_candidate' }),
+      ]),
+    );
   });
 
   it('habilita RLS e mantém os papéis da Data API sem privilégios de tabela', async () => {
@@ -326,6 +370,26 @@ describe('integridade e histórico', () => {
         values ('${ids.importBatch}', 1, '{"sku":"OUTRO"}'::jsonb);
       `),
     ).rejects.toThrow(/import_rows_batch_row_unique/i);
+  });
+
+  it('bloqueia repetição acidental do mesmo hash de arquivo', async () => {
+    await expect(
+      database.exec(`
+        insert into public.import_batches (
+          source_type, source_name, file_hash, total_rows, created_by
+        ) values (
+          'CSV', 'Outra origem', 'sha256:test', 0, '${ids.user}'
+        );
+      `),
+    ).rejects.toThrow(/import_batches_original_file_hash_unique/i);
+
+    await database.exec(`
+      insert into public.import_batches (
+        source_type, source_name, file_hash, total_rows, created_by, duplicate_of_batch_id
+      ) values (
+        'CSV', 'Reprocessamento autorizado', 'sha256:test', 0, '${ids.user}', '${ids.importBatch}'
+      );
+    `);
   });
 
   it('restringe exclusão de entidades referenciadas pelo histórico', async () => {

@@ -2,16 +2,21 @@
 
 ## Estado atual
 
-O Bloco 1 cria a modelagem principal em três migrations ordenadas:
+O Bloco 1 cria a modelagem principal nas três primeiras migrations. Os Blocos 2 e 3 adicionam
+metadados de staging, dry-run e validação nas migrations seguintes:
 
 1. `20260820160000_create_core_types_and_functions.sql`: tipos, schema privado e funções de
    integridade.
 2. `20260820160100_create_core_tables.sql`: tabelas, constraints, índices e triggers.
 3. `20260820160200_enable_rls_and_lock_api_access.sql`: RLS e bloqueio explícito dos papéis da Data
    API.
+4. `20260820173000_extend_import_staging_for_dry_run.sql`: cabeçalhos, mapeamento, resumo do dry-run,
+   classificação de linhas e proteção concorrente contra arquivo repetido.
+5. `20260820180000_add_import_validation_rules.sql`: estado de validação por linha, ValueMapping,
+   sugestões de revisão e candidaturas de categoria aprováveis.
 
-O motor transacional de estoque, as políticas de acesso e o importador ainda não foram
-implementados. As tabelas estão em modo default-deny para `anon` e `authenticated`.
+O motor transacional de estoque, as políticas de acesso e a promoção definitiva da importação ainda
+não foram implementados. As tabelas estão em modo default-deny para `anon` e `authenticated`.
 
 ## Convenções
 
@@ -103,16 +108,24 @@ estoque e não foram implementados neste bloco.
 
 ### `import_batches`
 
-Cada lote registra origem, arquivo, hash, status, contagens, autoria, confirmação e metadados. Checks
-impedem contagens negativas, contagens classificadas acima do total e confirmação parcialmente
-preenchida. O hash é indexado, mas não é único: reenvios e correções poderão existir; a idempotência
-da promoção será definida no importador.
+Cada lote registra origem, arquivo, tamanho, hash, cabeçalhos detectados, opções de parser,
+ColumnMapping e ValueMapping versionados, categorias aprovadas para criação, resumo do dry-run,
+status, contagens, autoria, confirmação e metadados. Checks impedem contagens negativas, contagens
+classificadas acima do total e confirmação parcialmente preenchida.
+
+Um índice único parcial bloqueia lotes originais ativos com o mesmo hash. Reprocessamento exige
+`duplicate_of_batch_id`, preservando a intenção e a rastreabilidade sem impedir correções futuras.
 
 ### `import_rows`
 
-É a área de staging obrigatória. Preserva `raw_data`, armazena normalização separadamente, estado e
-erros de validação e uma possível entidade resolvida. `(import_batch_id, row_number)` é único. A FK
-do lote é restritiva para preservar rastreabilidade.
+É a área de staging obrigatória. Preserva `raw_data`, armazena normalização separadamente, estado de
+ciclo e estado de validação, problemas estruturados, sugestões, candidatura de categoria, ação do
+dry-run, hash opcional da linha e uma possível entidade resolvida. `(import_batch_id, row_number)` é
+único. A FK do lote é restritiva para preservar rastreabilidade.
+
+`validation_state` usa `VALID`, `WARNING`, `ERROR`, `CONFLICT` ou `IGNORED`. Ele é separado de
+`validation_status`, que representa o ciclo técnico do staging, e de `dry_run_action`, que descreve
+`NEW`, `UPDATE_CANDIDATE`, `CONFLICT` ou `IGNORED`.
 
 ### `external_entity_mappings`
 

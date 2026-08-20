@@ -1,8 +1,8 @@
 # Módulos
 
-Cada diretório representa uma fronteira funcional. Nenhuma funcionalidade de negócio é
-implementada na fundação. Código compartilhado só deve sair de um módulo quando tiver uso real em
-mais de um contexto.
+Cada diretório representa uma fronteira funcional. Código compartilhado só deve sair de um módulo
+quando tiver uso real em mais de um contexto. Módulos implementados expõem sua API pelo próprio
+`index.ts` e não dependem de telas.
 
 - `auth`: autenticação e sessão.
 - `products`: cadastro de produtos.
@@ -14,5 +14,6 @@ mais de um contexto.
 - `losses`: perdas e baixas justificadas.
 - `reports`: consultas e relatórios.
 - `audit`: rastreabilidade e auditoria.
-- `data-import`: pipeline seguro de importação.
+- `data-import`: pipeline seguro de CSV/XLSX até staging, ValueMapping, validação, identificação e
+  dry-run bloqueável.
 - `data-export`: exportações autorizadas e sanitizadas.

@@ -1,10 +1,11 @@
 # Arquitetura
 
-## Objetivo desta fundação
+## Visão atual
 
 O projeto é um monólito modular no frontend, com React e TypeScript, apoiado por Supabase e
-PostgreSQL. Esta etapa estabelece limites, ferramentas e contratos de segurança; ela não contém
-telas nem regras de negócio de estoque.
+PostgreSQL. O Bloco 0 estabeleceu limites, ferramentas e contratos de segurança. Os Blocos 2 e 3
+adicionam o primeiro domínio desacoplado de React: análise segura, staging, mapeamento configurável,
+validação e identificação conservadora de dados de migração.
 
 ## Organização
 
@@ -28,6 +29,12 @@ em componentes React.
 Módulos não devem acessar internamente outros módulos por caminhos profundos. Quando uma integração
 for necessária, cada módulo deverá expor uma API pública pequena. Abstrações compartilhadas serão
 criadas somente após existir uso concreto.
+
+O módulo `data-import` separa `domain`, `application`, `parsers`, `ports`, `infrastructure` e
+`config`. Parsers não conhecem nomes de colunas legadas. Casos de uso dependem de ports e não
+possuem acesso de escrita a produtos ou saldos. Consultas de categorias e identidades de produto
+também passam por ports somente-leitura. A barreira de confirmação é uma função pura de domínio;
+ela não promove dados.
 
 ## Cliente Supabase
 

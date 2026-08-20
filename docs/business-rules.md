@@ -26,7 +26,23 @@
 - Entrada, consumo, perda e transferência exigem `ADMIN` ou `STOCK_OPERATOR`.
 - Ajustes e saldo inicial de migração exigem `ADMIN`.
 - Perdas e ajustes exigem motivo explícito.
+- Perda registra também observação opcional, unidade fotografada, local, autor e data; seu registro
+  documental e o movimento `LOSS` confirmam juntos.
 - No modelo central atual, transferências preservam a quantidade agregada e registram os dois locais.
+- Saídas exigem origem ativa `STOCK` e destino ativo `CONSUMPTION`; o destino nunca é implícito.
+- Uma saída pode conter de 1 a 100 itens. Todos confirmam juntos ou todos são revertidos.
+- Cada item de saída chama `consume_stock`, registra a unidade vigente do produto e fica vinculado ao
+  cabeçalho imutável da operação.
+- Repetir um lote com a mesma chave e o mesmo payload retorna o resultado anterior; mudar usuário,
+  locais, itens, quantidades ou motivo gera conflito.
+- Inventários percorrem somente `DRAFT → COUNTING → REVIEW → CONFIRMED`. `REVIEW` pode retornar para
+  `COUNTING` quando for necessário recontar.
+- Salvar contagens e entrar em revisão nunca altera saldo. A revisão registra saldo do sistema e
+  diferença para cada produto.
+- Confirmar inventário exige `ADMIN`, saldo ainda igual ao fotografado e transação all-or-nothing.
+  Diferença positiva chama `adjust_stock` com delta positivo; diferença negativa usa delta negativo;
+  diferença zero não gera movimento.
+- Inventário confirmado é imutável e idempotente. Reutilizar a chave com outra confirmação é conflito.
 - Cada produto pode possuir no máximo um marco `MIGRATION_OPENING_BALANCE`, sempre vinculado a um
   lote de importação válido e identificado como `Migração sistema legado`.
 
@@ -44,6 +60,22 @@
 - Locais aceitam somente `STOCK` ou `CONSUMPTION`.
 - Listagens e pesquisas são paginadas no servidor, com no máximo 100 registros por chamada.
 - Fornecedor com histórico é inativado e nunca excluído; documento informado é normalizado para CNPJ.
+
+## Auditoria
+
+- `stock_movements` é o fato permanente que explica o saldo; `audit_logs` é a trilha de ação, autoria,
+  entidade e snapshots. Um não substitui o outro.
+- Produto, categoria, local e fornecedor geram eventos de criação, alteração, inativação e reativação.
+- Nota, ajuste, perda, migração, importação, confirmação de lote e exportação administrativa são
+  auditados na mesma transação da operação correspondente.
+- O evento de confirmação de importação registra `import_batch_id`, arquivo, hash, usuário, data,
+  total de linhas e resultado estruturado.
+- Logs são append-only. Correções geram novos eventos e nunca reescrevem o anterior.
+- Senhas, hashes de senha, tokens, cookies, JWTs, `service_role`, secrets, chaves privadas e strings de
+  conexão são proibidos em `old_data`, `new_data` e `metadata`.
+- Somente `ADMIN` consulta auditoria, sempre com paginação server-side de no máximo 100 linhas.
+- Exportação administrativa é auditada por uma chave idempotente e não envia o conteúdo exportado ao
+  logger.
 
 ## NF-e
 
@@ -97,3 +129,16 @@
 - Exportações respeitam autorização, escopo e auditoria.
 - Senhas, tokens, secrets e credenciais nunca são exportados.
 - Formatos externos não definem o modelo interno; adaptadores fazem o mapeamento.
+
+## Relatórios
+
+- Relatórios são consultas somente-leitura e nunca alteram saldo, movimento ou staging.
+- Filtros, agregações, ordenação e paginação ocorrem no PostgreSQL; o React recebe apenas a página.
+- Cada página possui no máximo 100 linhas e informa o total filtrado.
+- Estoque zero é `OUT_OF_STOCK`; saldo positivo menor ou igual ao mínimo é `BELOW_MINIMUM`; os
+  demais casos são `OK`.
+- Consumo considera `CONSUMPTION_EXIT`; entradas consideram somente notas `CONFIRMED`; migração
+  considera somente `MIGRATION_OPENING_BALANCE` com `import_batch_id`.
+- Quantidades e valores monetários preservam precisão decimal e são entregues como texto.
+- `ADMIN`, `STOCK_OPERATOR` e `VIEWER` podem consultar relatórios quando o perfil está ativo.
+- Relatório de migração não expõe dados brutos, arquivo, hash ou metadados internos do staging.

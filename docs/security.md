@@ -71,7 +71,7 @@ idempotência, limites de quantidade, não negatividade e imutabilidade do hist�
 impostos pelo banco ou backend confiável. Logs não devem conter tokens, credenciais ou conteúdo
 sensível desnecessário.
 
-As seis funções públicas de estoque concedem `EXECUTE` somente a `authenticated` e revalidam perfil
+As funções públicas de estoque concedem `EXECUTE` somente a `authenticated` e revalidam perfil
 ativo e role internamente; receber o grant não basta para executar a operação. Helpers internos não
 concedem execução a `public`, `anon` ou `authenticated`. Todas as funções privilegiadas usam
 `SECURITY DEFINER` com `search_path` fixo e referências qualificadas.
@@ -80,6 +80,20 @@ Locks transacionais por chave de idempotência e produto serializam requisiçõe
 de saldo também é bloqueada com `FOR UPDATE`. A chave fica associada ao autor e ao payload exato,
 evitando tanto efeito duplicado quanto reutilização entre usuários. O registro de auditoria integra
 a mesma transação do movimento e do saldo.
+
+`consume_stock_batch` limita o lote a 100 itens, exige local `STOCK` de origem e `CONSUMPTION` de
+destino e bloqueia os produtos em ordem determinística antes de chamar `consume_stock`. As tabelas de
+cabeçalho e itens não concedem mutação direta, possuem RLS e triggers append-only. A chave do lote é
+única e o replay compara autor, locais, motivo e payload canônico completo.
+
+`register_stock_loss` exige `ADMIN` ou `STOCK_OPERATOR`, vincula o documento ao movimento `LOSS` e
+não oferece caminho alternativo de saldo. `stock_losses` concede somente leitura por RLS e permanece
+append-only inclusive para administradores.
+
+As RPCs de preparação do inventário exigem `ADMIN` ou `STOCK_OPERATOR`; somente `ADMIN` confirma e,
+portanto, alcança `adjust_stock`. Produtos são bloqueados em ordem determinística e o saldo atual é
+comparado ao snapshot de `REVIEW` antes do primeiro ajuste. `inventory_counts` e itens não concedem
+mutação direta, usam RLS e bloqueiam qualquer alteração depois de `CONFIRMED`.
 
 `confirm_product_import` também concede `EXECUTE` somente a `authenticated`, mas exige `ADMIN` ativo
 internamente. A função fixa `search_path`, revalida integralmente o staging e é o único caminho do
@@ -98,6 +112,23 @@ ambientes administrativos.
 Policies restringem linhas e grants por coluna preservam autoria e datas de criação. Histórico e
 auditoria não possuem mutações concedidas à Data API; `stock_movements` e `audit_logs` mantêm também
 triggers contra edição e exclusão.
+
+Auditoria automática usa funções `SECURITY DEFINER` somente para inserir snapshots explicitamente
+permitidos na mesma transação da entidade. Uma validação recursiva no banco bloqueia nomes de campos
+sensíveis e padrões de `service_role`, tokens JWT/Bearer e connection strings. As constraints também
+protegem inserções feitas fora dos triggers. A consulta `search_audit_logs` é `SECURITY INVOKER`,
+portanto somente `ADMIN` atravessa a RLS; páginas são limitadas a 100.
+
+`record_administrative_export` exige `ADMIN`, é idempotente e aceita apenas tipo allowlisted, formato,
+contagem e chave de correlação. A função não aceita conteúdo, filtros livres, caminhos com
+credenciais ou qualquer secret.
+
+As seis RPCs de relatório concedem `EXECUTE` apenas a `authenticated` e revalidam perfil ativo e
+role `ADMIN`, `STOCK_OPERATOR` ou `VIEWER`. Elas usam `SECURITY DEFINER` com `search_path` fixo,
+referências qualificadas e SQL estático. Essa fronteira permite compor leituras entre tabelas com
+escopos RLS diferentes sem conceder acesso direto adicional. O relatório de migração seleciona uma
+lista segura de campos e nunca retorna `raw_data`, arquivo, hash, metadata, tokens ou secrets.
+Parâmetros de página, período, enum e UUID são tipados/validados; não existe SQL dinâmico.
 
 `stage_nfe_xml`, `review_nfe_import` e `confirm_nfe_import` concedem `EXECUTE` somente a
 `authenticated`, mas exigem `ADMIN` ou `STOCK_OPERATOR` ativo internamente. Operadores só atuam nos

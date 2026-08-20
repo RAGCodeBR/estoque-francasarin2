@@ -120,6 +120,8 @@ describe('migrations do esquema principal', () => {
       'external_entity_mappings',
       'import_batches',
       'import_rows',
+      'inventory_count_items',
+      'inventory_counts',
       'invoice_import_items',
       'invoice_imports',
       'invoice_items',
@@ -129,6 +131,9 @@ describe('migrations do esquema principal', () => {
       'profiles',
       'roles',
       'stock_balances',
+      'stock_consumption_batch_items',
+      'stock_consumption_batches',
+      'stock_losses',
       'stock_movements',
       'supplier_product_mappings',
       'suppliers',
@@ -147,13 +152,37 @@ describe('migrations do esquema principal', () => {
       select table_name, column_name, data_type, numeric_precision, numeric_scale
       from information_schema.columns
       where table_schema = 'public'
-        and column_name in ('quantity', 'minimum_quantity')
+        and column_name in (
+          'quantity', 'minimum_quantity', 'counted_quantity',
+          'system_quantity', 'difference_quantity'
+        )
       order by table_name, column_name;
     `);
 
-    expect(result.rows).toHaveLength(5);
+    expect(result.rows).toHaveLength(10);
     expect(result.rows).toEqual(
       expect.arrayContaining([
+        expect.objectContaining({
+          table_name: 'inventory_count_items',
+          column_name: 'counted_quantity',
+          data_type: 'numeric',
+          numeric_precision: 18,
+          numeric_scale: 3,
+        }),
+        expect.objectContaining({
+          table_name: 'inventory_count_items',
+          column_name: 'system_quantity',
+          data_type: 'numeric',
+          numeric_precision: 18,
+          numeric_scale: 3,
+        }),
+        expect.objectContaining({
+          table_name: 'inventory_count_items',
+          column_name: 'difference_quantity',
+          data_type: 'numeric',
+          numeric_precision: 18,
+          numeric_scale: 3,
+        }),
         expect.objectContaining({
           table_name: 'invoice_import_items',
           column_name: 'quantity',
@@ -183,6 +212,20 @@ describe('migrations do esquema principal', () => {
           numeric_scale: 3,
         }),
         expect.objectContaining({
+          table_name: 'stock_consumption_batch_items',
+          column_name: 'quantity',
+          data_type: 'numeric',
+          numeric_precision: 18,
+          numeric_scale: 3,
+        }),
+        expect.objectContaining({
+          table_name: 'stock_losses',
+          column_name: 'quantity',
+          data_type: 'numeric',
+          numeric_precision: 18,
+          numeric_scale: 3,
+        }),
+        expect.objectContaining({
           table_name: 'stock_movements',
           column_name: 'quantity',
           data_type: 'numeric',
@@ -206,7 +249,8 @@ describe('migrations do esquema principal', () => {
           'invoice_status', 'import_status', 'import_row_validation_state',
           'product_import_mode', 'existing_product_import_strategy',
           'master_quantity_import_strategy', 'import_row_promotion_action',
-          'invoice_import_status', 'invoice_item_match_source', 'invoice_import_source'
+          'invoice_import_status', 'invoice_item_match_source', 'invoice_import_source',
+          'inventory_count_status'
         )
       group by enum_type.typname;
     `);
@@ -249,6 +293,7 @@ describe('migrations do esquema principal', () => {
       ],
       invoice_item_match_source: ['NONE', 'SUPPLIER_PRODUCT_CODE', 'EAN', 'MANUAL'],
       invoice_import_source: ['XML', 'PDF'],
+      inventory_count_status: ['DRAFT', 'COUNTING', 'REVIEW', 'CONFIRMED'],
     });
     expect(enums.movement_type).toEqual([
       'PURCHASE_ENTRY',
@@ -316,7 +361,7 @@ describe('migrations do esquema principal', () => {
       order by class.relname;
     `);
 
-    expect(rlsResult.rows).toHaveLength(18);
+    expect(rlsResult.rows).toHaveLength(23);
 
     const anonymousPrivileges = await database.query<{ table_name: string }>(`
       select table_name

@@ -28,6 +28,11 @@ const ids = {
   negativeProduct: 'e0000000-0000-4000-8000-000000000010',
   unauthorizedProduct: 'e0000000-0000-4000-8000-000000000011',
   legacyKeyProduct: 'e0000000-0000-4000-8000-000000000012',
+  batchProductA: 'e0000000-0000-4000-8000-000000000013',
+  batchProductB: 'e0000000-0000-4000-8000-000000000014',
+  batchRollbackA: 'e0000000-0000-4000-8000-000000000015',
+  batchRollbackB: 'e0000000-0000-4000-8000-000000000016',
+  batchConcurrencyProduct: 'e0000000-0000-4000-8000-000000000017',
 } as const;
 
 interface StockResult {
@@ -147,7 +152,12 @@ beforeAll(async () => {
       ('${ids.rollbackProduct}', 'Rollback', 'ENGINE-ROLLBACK', 'RAW', 'KG', '${ids.category}', '${ids.admin}', '${ids.admin}'),
       ('${ids.negativeProduct}', 'Negativo', 'ENGINE-NEGATIVE', 'RAW', 'KG', '${ids.category}', '${ids.admin}', '${ids.admin}'),
       ('${ids.unauthorizedProduct}', 'Sem autorização', 'ENGINE-UNAUTHORIZED', 'RAW', 'KG', '${ids.category}', '${ids.admin}', '${ids.admin}'),
-      ('${ids.legacyKeyProduct}', 'Chave histórica', 'ENGINE-LEGACY-KEY', 'RAW', 'KG', '${ids.category}', '${ids.admin}', '${ids.admin}');
+      ('${ids.legacyKeyProduct}', 'Chave histórica', 'ENGINE-LEGACY-KEY', 'RAW', 'KG', '${ids.category}', '${ids.admin}', '${ids.admin}'),
+      ('${ids.batchProductA}', 'Lote A', 'ENGINE-BATCH-A', 'RAW', 'KG', '${ids.category}', '${ids.admin}', '${ids.admin}'),
+      ('${ids.batchProductB}', 'Lote B', 'ENGINE-BATCH-B', 'RAW', 'UN', '${ids.category}', '${ids.admin}', '${ids.admin}'),
+      ('${ids.batchRollbackA}', 'Rollback lote A', 'ENGINE-BATCH-ROLLBACK-A', 'RAW', 'KG', '${ids.category}', '${ids.admin}', '${ids.admin}'),
+      ('${ids.batchRollbackB}', 'Rollback lote B', 'ENGINE-BATCH-ROLLBACK-B', 'RAW', 'KG', '${ids.category}', '${ids.admin}', '${ids.admin}'),
+      ('${ids.batchConcurrencyProduct}', 'Concorrência lote', 'ENGINE-BATCH-CONCURRENCY', 'RAW', 'KG', '${ids.category}', '${ids.admin}', '${ids.admin}');
 
     insert into public.stock_balances (product_id, quantity) values
       ('${ids.consumeProduct}', 10.000),
@@ -156,7 +166,12 @@ beforeAll(async () => {
       ('${ids.transferProduct}', 10.000),
       ('${ids.concurrencyProduct}', 10.000),
       ('${ids.negativeProduct}', 3.000),
-      ('${ids.unauthorizedProduct}', 5.000);
+      ('${ids.unauthorizedProduct}', 5.000),
+      ('${ids.batchProductA}', 10.000),
+      ('${ids.batchProductB}', 8.000),
+      ('${ids.batchRollbackA}', 10.000),
+      ('${ids.batchRollbackB}', 2.000),
+      ('${ids.batchConcurrencyProduct}', 10.000);
 
     insert into public.stock_movements (
       product_id, movement_type, quantity, destination_location_id, reason,
@@ -336,10 +351,10 @@ describe('motor transacional de estoque', () => {
     try {
       settled = await Promise.allSettled([
         database.query(`select * from public.consume_stock(
-          '${ids.concurrencyProduct}', 7, '${ids.stockA}', 'concurrency:a'
+          '${ids.concurrencyProduct}', 7, '${ids.stockA}', 'concurrency:a', '${ids.consumption}'
         );`),
         database.query(`select * from public.consume_stock(
-          '${ids.concurrencyProduct}', 7, '${ids.stockA}', 'concurrency:b'
+          '${ids.concurrencyProduct}', 7, '${ids.stockA}', 'concurrency:b', '${ids.consumption}'
         );`),
       ]);
     } finally {
@@ -453,7 +468,7 @@ describe('motor transacional de estoque', () => {
       queryAs(
         ids.operator,
         `select * from public.consume_stock(
-          '${ids.negativeProduct}', 4, '${ids.stockA}', 'negative:1'
+          '${ids.negativeProduct}', 4, '${ids.stockA}', 'negative:1', '${ids.consumption}'
         );`,
       ),
     ).rejects.toThrow(/negative balance is forbidden/i);
@@ -505,5 +520,201 @@ describe('motor transacional de estoque', () => {
         );`,
       ),
     ).rejects.toThrow(/ADMIN role is required/i);
+  });
+
+  it('registra saída individual com unidade, local, usuário, data e chave idempotente', async () => {
+    const rows = await queryAs<{ report: Record<string, unknown> }>(
+      ids.operator,
+      `select public.consume_stock_batch(
+        '${ids.stockA}',
+        '${ids.consumption}',
+        '[{"product_id":"${ids.batchProductA}","quantity":"1.250"}]'::jsonb,
+        'output:single:1',
+        'Preparo do almoço'
+      ) as report;`,
+    );
+    const report = onlyResult(rows).report;
+
+    expect(report).toMatchObject({
+      sourceLocationId: ids.stockA,
+      destinationLocationId: ids.consumption,
+      idempotencyKey: 'output:single:1',
+      reason: 'Preparo do almoço',
+      movementCount: 1,
+      applied: true,
+      createdBy: ids.operator,
+    });
+    expect(typeof report.createdAt).toBe('string');
+
+    const movement = await database.query<{
+      quantity: string;
+      unit: string;
+      destination_location_id: string;
+      created_by: string;
+      idempotency_key: string;
+      created_at: Date;
+    }>(`
+      select movement.quantity::text, movement.unit::text,
+             movement.destination_location_id::text, movement.created_by::text,
+             movement.idempotency_key, movement.created_at
+      from public.stock_consumption_batch_items item
+      join public.stock_movements movement on movement.id = item.movement_id
+      where item.batch_id = '${String(report.batchId)}';
+    `);
+    expect(movement.rows).toHaveLength(1);
+    expect(movement.rows[0]).toMatchObject({
+      quantity: '1.250',
+      unit: 'KG',
+      destination_location_id: ids.consumption,
+      created_by: ids.operator,
+    });
+    expect(movement.rows[0]?.idempotency_key).toMatch(/^stock-output:/);
+    expect(movement.rows[0]?.created_at).toBeDefined();
+  });
+
+  it('confirma múltiplos itens em uma única transação e permite replay sem duplicar', async () => {
+    const sql = `select public.consume_stock_batch(
+      '${ids.stockA}',
+      '${ids.consumption}',
+      '[{"product_id":"${ids.batchProductA}","quantity":"2.000"},{"product_id":"${ids.batchProductB}","quantity":"4.000"}]'::jsonb,
+      'output:batch:1'
+    ) as report;`;
+    const first = onlyResult(await queryAs<{ report: Record<string, unknown> }>(ids.operator, sql));
+    const replay = onlyResult(
+      await queryAs<{ report: Record<string, unknown> }>(ids.operator, sql),
+    );
+
+    expect(first.report).toMatchObject({ movementCount: 2, applied: true });
+    expect(replay.report).toMatchObject({
+      batchId: first.report.batchId,
+      movementCount: 2,
+      applied: false,
+    });
+    expect(
+      await scalar(
+        `select quantity::text as value from public.stock_balances where product_id = '${ids.batchProductA}';`,
+      ),
+    ).toBe('6.750');
+    expect(
+      await scalar(
+        `select quantity::text as value from public.stock_balances where product_id = '${ids.batchProductB}';`,
+      ),
+    ).toBe('4.000');
+    expect(
+      await scalar(
+        `select count(*)::text as value from public.stock_consumption_batch_items where batch_id = '${String(first.report.batchId)}';`,
+      ),
+    ).toBe('2');
+
+    await expect(
+      queryAs(
+        ids.operator,
+        `select public.consume_stock_batch(
+          '${ids.stockA}', '${ids.consumption}',
+          '[{"product_id":"${ids.batchProductA}","quantity":"3.000"}]'::jsonb,
+          'output:batch:1'
+        );`,
+      ),
+    ).rejects.toThrow(/different stock output payload/i);
+  });
+
+  it('reverte o lote inteiro quando um item possui estoque insuficiente', async () => {
+    await expect(
+      queryAs(
+        ids.operator,
+        `select public.consume_stock_batch(
+          '${ids.stockA}',
+          '${ids.consumption}',
+          '[{"product_id":"${ids.batchRollbackA}","quantity":"3.000"},{"product_id":"${ids.batchRollbackB}","quantity":"5.000"}]'::jsonb,
+          'output:rollback:1'
+        );`,
+      ),
+    ).rejects.toThrow(/negative balance is forbidden/i);
+
+    expect(
+      await scalar(
+        `select quantity::text as value from public.stock_balances where product_id = '${ids.batchRollbackA}';`,
+      ),
+    ).toBe('10.000');
+    expect(
+      await scalar(
+        `select quantity::text as value from public.stock_balances where product_id = '${ids.batchRollbackB}';`,
+      ),
+    ).toBe('2.000');
+    expect(
+      await scalar(
+        `select count(*)::text as value from public.stock_consumption_batches where idempotency_key = 'output:rollback:1';`,
+      ),
+    ).toBe('0');
+    expect(
+      await scalar(
+        `select count(*)::text as value from public.stock_movements where product_id in ('${ids.batchRollbackA}', '${ids.batchRollbackB}');`,
+      ),
+    ).toBe('0');
+  });
+
+  it('serializa lotes concorrentes e impede consumo acima do saldo', async () => {
+    await assumeIdentity('authenticated', ids.operator);
+    let settled: PromiseSettledResult<unknown>[];
+    try {
+      settled = await Promise.allSettled([
+        database.query(`select public.consume_stock_batch(
+          '${ids.stockA}', '${ids.consumption}',
+          '[{"product_id":"${ids.batchConcurrencyProduct}","quantity":"7.000"}]'::jsonb,
+          'output:concurrency:a'
+        );`),
+        database.query(`select public.consume_stock_batch(
+          '${ids.stockA}', '${ids.consumption}',
+          '[{"product_id":"${ids.batchConcurrencyProduct}","quantity":"7.000"}]'::jsonb,
+          'output:concurrency:b'
+        );`),
+      ]);
+    } finally {
+      await resetIdentity();
+    }
+
+    expect(settled.filter(({ status }) => status === 'fulfilled')).toHaveLength(1);
+    expect(settled.filter(({ status }) => status === 'rejected')).toHaveLength(1);
+    expect(
+      await scalar(
+        `select quantity::text as value from public.stock_balances where product_id = '${ids.batchConcurrencyProduct}';`,
+      ),
+    ).toBe('3.000');
+    expect(
+      await scalar(
+        `select count(*)::text as value from public.stock_consumption_batches where idempotency_key like 'output:concurrency:%';`,
+      ),
+    ).toBe('1');
+  });
+
+  it('exige destino CONSUMPTION e autorização operacional para saída', async () => {
+    await expect(
+      queryAs(
+        ids.operator,
+        `select * from public.consume_stock(
+          '${ids.unauthorizedProduct}', 1, '${ids.stockA}', 'output:no-destination'
+        );`,
+      ),
+    ).rejects.toThrow(/destination_location_id is required/i);
+    await expect(
+      queryAs(
+        ids.operator,
+        `select public.consume_stock_batch(
+          '${ids.stockA}', '${ids.stockB}',
+          '[{"product_id":"${ids.unauthorizedProduct}","quantity":"1.000"}]'::jsonb,
+          'output:wrong-destination'
+        );`,
+      ),
+    ).rejects.toThrow(/destination_location_id must have type CONSUMPTION/i);
+    await expect(
+      queryAs(
+        ids.viewer,
+        `select public.consume_stock_batch(
+          '${ids.stockA}', '${ids.consumption}',
+          '[{"product_id":"${ids.unauthorizedProduct}","quantity":"1.000"}]'::jsonb,
+          'output:viewer'
+        );`,
+      ),
+    ).rejects.toThrow(/stock operation role is required/i);
   });
 });

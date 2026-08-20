@@ -22,6 +22,15 @@ staging, validação, autorização e o motor transacional:
    transacional do staging, reconciliação explícita e relatório final.
 9. `20260820220000_add_master_data_search.sql`: pesquisa paginada de produtos, categorias e locais e
    bloqueio explícito de exclusão física.
+10. `20260820230000_add_nfe_xml_receiving.sql`: staging e confirmação transacional de NF-e XML.
+11. `20260820240000_add_assisted_pdf_invoice_import.sql`: importação assistida de PDF com revisão
+    humana obrigatória.
+12. `20260820250000_add_stock_outputs.sql`: saídas individuais e em lote all-or-nothing.
+13. `20260820260000_add_losses_and_inventory_counts.sql`: perdas documentadas, contagens e ajustes
+    compensatórios.
+14. `20260820270000_add_complete_audit_logging.sql`: auditoria completa, append-only e sanitizada.
+15. `20260820280000_add_reports.sql`: seis relatórios filtrados e paginados no PostgreSQL, fronteira
+    de leitura por roles e índices específicos para período, tipo, local, responsável e referência.
 
 A promoção definitiva de produtos foi implementada sem telas. O acesso pela Data API segue uma
 matriz explícita de roles e permanece default-deny quando não existe policy permissiva.
@@ -129,7 +138,9 @@ Essa tabela concede somente leitura aos três papéis. Nenhum usuário da aplica
 
 Cada movimento registra produto, tipo, quantidade positiva, locais opcionais, nota, lote de
 importação, motivo, referência compensatória, chave de idempotência, autor, data e snapshots
-`balance_before`/`balance_after`.
+`balance_before`/`balance_after`. Movimentos novos também registram `unit`, capturada do produto por
+trigger no instante do `INSERT`; movimentos históricos anteriores à migration podem manter esse
+campo nulo sem que o histórico seja reescrito.
 
 - `idempotency_key` é obrigatória e globalmente única.
 - `reference_id` é uma FK para outro movimento e não pode apontar para o próprio registro.
@@ -137,6 +148,16 @@ importação, motivo, referência compensatória, chave de idempotência, autor,
 - `created_by` é obrigatório.
 - Triggers bloqueiam `UPDATE` e `DELETE` para qualquer papel, tornando a tabela append-only.
 - Cada produto aceita no máximo um movimento `MIGRATION_OPENING_BALANCE`.
+
+### `stock_consumption_batches` e `stock_consumption_batch_items`
+
+O cabeçalho representa uma confirmação de saída para um destino `CONSUMPTION`. Preserva origem,
+destino, chave de idempotência, payload canônico, motivo, autor e instante. Os itens registram linha,
+produto, quantidade `NUMERIC(18,3)`, unidade e o `stock_movement` definitivo. As duas tabelas são
+append-only, usam FKs restritivas, RLS e concedem apenas leitura aos papéis autorizados.
+
+A chave do cabeçalho é única e vinculada ao usuário e ao payload completo. Isso detecta inclusive
+replay parcial ou mudança de ordem/quantidade, além da idempotência individual de cada movimento.
 
 ### Motor transacional
 
@@ -146,6 +167,7 @@ As funções públicas são a única API de escrita de estoque:
 | --------------------------------- | ----------------------------------- | ----------------------- | --------------------- |
 | `receive_stock`                   | `PURCHASE_ENTRY`                    | soma                    | ADMIN, STOCK_OPERATOR |
 | `consume_stock`                   | `CONSUMPTION_EXIT`                  | subtrai                 | ADMIN, STOCK_OPERATOR |
+| `consume_stock_batch`             | `CONSUMPTION_EXIT` por item         | subtrai                 | ADMIN, STOCK_OPERATOR |
 | `register_loss`                   | `LOSS`                              | subtrai                 | ADMIN, STOCK_OPERATOR |
 | `adjust_stock`                    | `ADJUSTMENT_POSITIVE` ou `NEGATIVE` | delta assinado          | ADMIN                 |
 | `transfer_stock`                  | `TRANSFER`                          | preserva o total        | ADMIN, STOCK_OPERATOR |
@@ -159,6 +181,40 @@ falha desfaz todos eles.
 A chave de idempotência é global, limitada a 200 caracteres e vinculada ao usuário e ao payload.
 Repetir exatamente a mesma operação pelo mesmo usuário retorna o movimento original com
 `applied = false`. Reutilizar a chave com outro usuário ou payload é conflito.
+
+`consume_stock` exige origem `STOCK` e destino `CONSUMPTION`. `consume_stock_batch` recebe de 1 a 100
+itens, valida e canonicaliza todo o payload, bloqueia os produtos em ordem estável e chama
+`consume_stock` com uma chave determinística por linha. Cabeçalho, itens, movimentos, saldos e
+auditoria pertencem à mesma transação; estoque insuficiente em qualquer linha reverte tudo. O replay
+exato retorna o relatório original com `applied = false`.
+
+### `stock_losses`
+
+Cada perda documental aponta para exatamente um movimento `LOSS` e repete os campos de consulta
+essenciais: produto, quantidade `NUMERIC(18,3)`, unidade fotografada, local `STOCK`, motivo,
+observação, chave de idempotência, autor e data. `register_stock_loss` é o único caminho de criação:
+ele chama `register_loss` e insere o documento na mesma transação. A tabela é append-only, possui RLS
+e não concede mutação direta.
+
+### `inventory_counts` e `inventory_count_items`
+
+`inventory_counts` preserva local, status, referência, observação e autoria/datas de cada marco do
+ciclo `DRAFT → COUNTING → REVIEW → CONFIRMED`. A confirmação persiste chave idempotente e relatório.
+O cabeçalho nunca é excluído e torna-se imutável depois de confirmado.
+
+Cada item é único por inventário/produto e registra unidade, contagem física, saldo do sistema
+fotografado em `REVIEW`, diferença exata e movimento compensatório opcional. Contagem física e saldo
+aceitam zero; todas as quantidades usam `NUMERIC(18,3)`, nunca ponto flutuante.
+
+As RPCs `create_inventory_count`, `open_inventory_count`, `save_inventory_count_items` e
+`review_inventory_count` exigem `ADMIN` ou `STOCK_OPERATOR`. Nenhuma movimenta estoque.
+`confirm_inventory_count` exige `ADMIN`, revalida o snapshot sob os mesmos locks do motor e chama
+`adjust_stock` para cada diferença. Uma falha reverte todos os ajustes, itens, status e auditoria.
+Se qualquer saldo mudou depois de `REVIEW`, a confirmação é recusada e o inventário pode voltar para
+`COUNTING`.
+
+Ajustes avulsos usam `StockAdjustmentService`, que preserva o delta como string decimal assinada e
+chama exclusivamente `adjust_stock`. Delta zero é inválido; motivo e idempotência são obrigatórios.
 
 Como o modelo atual possui saldo central por produto, a transferência valida disponibilidade e
 registra origem/destino, mas não altera a quantidade agregada. Ela não afirma saldo individual por
@@ -232,7 +288,22 @@ e opções retorna esse relatório com `applied = false`; opções diferentes s�
 
 `audit_logs` comporta ator opcional para eventos do sistema, ação, tipo e ID da entidade, request ID,
 estado anterior/novo e metadados. Assim como movimentos, logs de auditoria possuem triggers contra
-edição e exclusão. A captura automática de eventos ainda não foi criada.
+edição e exclusão.
+
+Triggers transacionais auditam produtos, categorias, locais, fornecedores, notas, staging de NF e
+`import_batches`. Ações distinguem criação, alteração, inativação, reativação, confirmação e
+cancelamento. O evento de lote inclui obrigatoriamente UUID, nome do arquivo, hash, usuário, instante,
+total de linhas e resultado. Movimentos continuam em `stock_movements`; seu evento correlato é
+normalizado como ajuste, perda ou abertura de migração e recebe os IDs de nota/lote/local aplicáveis.
+
+`private.audit_payload_is_safe` percorre recursivamente objetos e arrays. Constraints e trigger
+`BEFORE INSERT` rejeitam campos de senha, tokens, secrets, `service_role`, JWT, cookies, chaves
+privadas e strings de conexão. Os snapshots dos triggers usam listas permitidas por entidade.
+
+`search_audit_logs` filtra ação, entidade, ator, request e intervalo de datas, ordena por
+`created_at DESC, id DESC`, limita páginas a 100 e executa como `SECURITY INVOKER`. Índices compostos
+cobrem ação/data, entidade/data, ator/data e request/data. `record_administrative_export` registra
+somente tipo, formato, total e chave idempotente; não recebe arquivo nem dados exportados.
 
 ## NF-e XML e fornecedores
 
@@ -277,7 +348,7 @@ itens, movimentos, saldo e auditoria em uma transação. A função interna reno
 
 ## Data API e RLS
 
-Todas as 18 tabelas possuem RLS e pelo menos uma policy explícita. `anon` permanece sem privilégios
+Todas as 23 tabelas possuem RLS e pelo menos uma policy explícita. `anon` permanece sem privilégios
 de tabela. `authenticated` recebe apenas grants compatíveis com a matriz abaixo; toda policy exige
 perfil ativo e role apropriada.
 
@@ -324,6 +395,23 @@ para referências opcionais.
 Triggers `set_updated_at` mantêm timestamps mutáveis no banco. Constraints, motor transacional e
 confirmação de importação expressam as invariantes conhecidas.
 
+## Relatórios
+
+As RPCs `report_current_stock`, `report_consumption`, `report_losses`, `report_entries`,
+`report_stock_movements` e `report_migration_opening_balances` retornam JSON com `items`, `page`,
+`page_size` e `total`. Página começa em 1 e o tamanho máximo é 100.
+
+- Estoque atual classifica cada produto como `OUT_OF_STOCK`, `BELOW_MINIMUM` ou `OK`.
+- Consumo soma `CONSUMPTION_EXIT` por produto, categoria e destino no período solicitado.
+- Perdas usam o registro documental de `stock_losses`, incluindo motivo, local e responsável.
+- Entradas mostram somente itens de notas `CONFIRMED`, com preço e total em precisão original.
+- Movimentações preservam tipo, unidade fotografada, locais, autoria e referências.
+- Migração lê somente `MIGRATION_OPENING_BALANCE` vinculado a lote e expõe origem sanitizada.
+
+Quantidades e valores são serializados como texto; nenhum relatório converte `NUMERIC` em ponto
+flutuante. Índices compostos cobrem os principais filtros temporais por tipo, local, usuário,
+fornecedor, produto e lote.
+
 ## Testes locais
 
 `tests/integration/database-schema.test.ts` inicia PostgreSQL embutido via PGlite, simula apenas os
@@ -335,9 +423,23 @@ visualizador, usuário sem role e perfil inativo, e executam consultas/mutaçõe
 é validado ao aplicar a migration em Supabase, pois suas tabelas pertencem à plataforma e não ao
 PostgreSQL embutido.
 
-`tests/integration/stock-engine.test.ts` executa as seis RPCs no PostgreSQL, cobrindo entrada,
+`tests/integration/stock-engine.test.ts` executa as sete RPCs no PostgreSQL, cobrindo entrada,
 consumo, perda, ajustes, abertura legada, transferência, concorrência, replay idempotente, conflito
 de chave, rollback forçado, estoque negativo e usuários sem autorização.
+
+O mesmo teste cobre `consume_stock_batch` com saída individual, snapshots de unidade, lote
+all-or-nothing, replay, conflito de payload, destino inválido, estoque insuficiente e lotes
+concorrentes. O serviço TypeScript possui testes unitários de normalização decimal e limites.
+
+`tests/integration/losses-and-inventory-counts.test.ts` cobre perda completa, replay, saldo
+insuficiente, autorização, os quatro estados do inventário, exemplos positivo e negativo, ausência de
+efeito antes da confirmação, snapshot obsoleto, rollback integral e imutabilidade. Serviços de perda
+e inventário possuem testes unitários próprios.
+
+`tests/integration/audit-logs.test.ts` cobre CRUD auditado, distinção entre evento e movimento,
+ajuste, perda, migração, NF, lote com metadados completos, exportação idempotente, paginação, índices,
+RLS, imutabilidade e rejeição recursiva de secrets. O serviço de consulta/exportação possui testes
+unitários de normalização e limites.
 
 `tests/integration/product-import-confirmation.test.ts` promove uma fixture principal de 220 linhas e
 cobre replay, associação, atualização opt-in, quantidade mestre ignorada, reconciliação por
@@ -356,3 +458,8 @@ precisão, limites e XML hostil.
 produto desconhecidos, ausência de associação por descrição, revisão obrigatória, separação entre
 RPCs XML/PDF, confirmação por `receive_stock`, replay e duplicidade. Testes unitários cobrem assinatura
 inválida, PDF quebrado, ausência de texto e extração conservadora com evidência de página.
+
+`tests/integration/reports.test.ts` cobre os seis relatórios, filtros de período e entidades,
+agregação, precisão decimal, origem sanitizada da migração, as três roles autorizadas, anônimo,
+usuário sem role, limites de paginação e índices. O serviço TypeScript possui testes unitários de
+normalização de datas, UUIDs, pesquisa e paginação.

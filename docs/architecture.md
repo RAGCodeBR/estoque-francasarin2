@@ -16,6 +16,15 @@ O Bloco 8 adiciona fornecedores e o recebimento headless de NF-e XML, mantendo l
 staging e fazendo nota, itens e entradas de estoque nascerem juntos somente na confirmação.
 O Bloco 9 mantém XML como fonte preferencial e acrescenta PDF como importação assistida: extração
 conservadora, evidências, sugestões e revisão humana obrigatória antes da confirmação.
+O Bloco 10 adiciona saídas headless para locais de consumo, individuais ou com até 100 itens em uma
+única transação, sempre por `consume_stock` e sem mutação direta do saldo.
+O Bloco 11 acrescenta perdas documentadas e inventários físicos em staging operacional. Contagem e
+revisão apenas fotografam dados; a confirmação administrativa reconcilia diferenças exclusivamente
+por movimentos compensatórios do motor.
+O Bloco 12 completa a auditoria transacional de cadastros, estoque, notas, importações, migrações e
+exportações administrativas, com consulta paginada e bloqueio preventivo de credenciais nos payloads.
+O Bloco 13 adiciona o domínio headless de relatórios. Filtros, agregações, ordenação e paginação são
+executados no PostgreSQL; o cliente recebe somente a página solicitada e decimais exatos em texto.
 
 ## Organização
 
@@ -52,9 +61,11 @@ somente `profiles`, `roles` e `user_roles`; uma sessão `authenticated` sem role
 dados operacionais.
 
 O limite de escrita do domínio de estoque é formado pelas RPCs `receive_stock`, `consume_stock`,
-`register_loss`, `adjust_stock`, `transfer_stock` e `apply_migration_opening_balance`. Elas delegam a
-uma função privada única, responsável por autorização, locks, idempotência, movimento, saldo e
-auditoria na mesma transação. Nenhuma regra crítica depende de React.
+`consume_stock_batch`, `register_loss`, `adjust_stock`, `transfer_stock` e
+`apply_migration_opening_balance`. Operações simples delegam a uma função privada única, responsável
+por autorização, locks, idempotência, movimento, saldo e auditoria na mesma transação. O lote ordena
+os locks dos produtos e chama `consume_stock` para cada item, preservando all-or-nothing. Nenhuma
+regra crítica depende de React.
 
 `confirm_product_import` é o único limite de promoção do staging de produtos. A função serializa
 confirmações, revalida o preview, cria ou associa entidades, chama o núcleo do motor para quantidades
@@ -87,6 +98,35 @@ ignorar linhas explicitamente e `confirm_pdf_invoice` exige revisão humana comp
 
 O módulo `suppliers` segue o mesmo desenho dos demais dados mestres, incluindo paginação no servidor,
 normalização de CNPJ e ciclo de inativação/reativação. Exclusão física não integra o contrato.
+
+O módulo `inventory` expõe `StockOutputService` por `application → ports ← infrastructure`. O serviço
+usa strings decimais exatas, exige origem e destino distintos e transforma a saída individual em um
+lote de um item. O adaptador chama somente `consume_stock_batch`; a confirmação e todas as regras
+críticas permanecem no PostgreSQL.
+
+O mesmo módulo expõe `InventoryCountService`. Suas RPCs controlam
+`DRAFT → COUNTING → REVIEW → CONFIRMED`; produtos são bloqueados em ordem estável ao fotografar e ao
+confirmar. O saldo fotografado em `REVIEW` precisa continuar atual na confirmação. Cada diferença
+chama `adjust_stock`, enquanto diferença zero não cria movimento. Esse desenho é a referência para
+reconciliações futuras de quantidades externas, que também nunca poderão sobrescrever saldo.
+`StockAdjustmentService` oferece ajustes administrativos explícitos, mas seu adaptador chama somente
+`adjust_stock`; nem o serviço nem o repositório expõem `UPDATE` de saldo.
+
+O módulo `losses` encapsula `register_stock_loss`. A RPC cria o movimento por `register_loss` e o
+registro documental com motivo e observação na mesma transação. Nenhum port desses módulos oferece
+escrita direta em `stock_balances` ou `stock_movements`.
+
+O módulo `audit` separa o histórico operacional de estoque da trilha de responsabilidade. Triggers
+`AFTER` capturam snapshots permitidos dos dados mestres, notas e lotes na mesma transação da mudança.
+Eventos do motor são classificados conforme movimento, sem copiar credenciais. `AuditService` chama
+uma RPC `SECURITY INVOKER` paginada; RLS mantém a consulta exclusiva de `ADMIN`. Exportações apenas
+registram tipo, formato, contagem e idempotência depois da conclusão, nunca o conteúdo exportado.
+
+O módulo `reports` segue `application → ports ← infrastructure` e não oferece comandos. Seis RPCs
+produzem estoque atual, consumo agregado, perdas, entradas confirmadas, movimentações e saldos
+iniciais de migração. Todas aplicam filtros e limite máximo de 100 linhas antes de serializar a
+resposta. A leitura de migração usa uma fronteira `SECURITY DEFINER` estreita para não conceder ao
+`VIEWER` acesso geral ao staging nem expor hash, arquivo ou metadados do lote.
 
 ## Cliente Supabase
 

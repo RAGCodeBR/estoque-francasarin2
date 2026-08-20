@@ -335,7 +335,7 @@ describe('autenticação, roles e RLS', () => {
       order by class.relname;
     `);
 
-    expect(rows.rows).toHaveLength(18);
+    expect(rows.rows).toHaveLength(23);
     expect(rows.rows.every(({ policy_count }) => policy_count > 0)).toBe(true);
   });
 

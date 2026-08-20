@@ -266,6 +266,12 @@ O lote é confirmado em uma transação única. Uma falha na última linha desfa
 produtos e movimentos criados nas primeiras linhas. Um lote `COMPLETED` é replayável somente com as
 mesmas opções e nunca produz novos efeitos.
 
+Cada criação e mudança relevante do lote gera auditoria. A confirmação registra em `audit_logs` o
+`import_batch_id`, nome original do arquivo, hash, usuário, instante, total de linhas e relatório
+estruturado. Esses campos são produzidos pelo banco a partir do lote oficial; o cliente não envia
+payload livre ao logger. Movimentos de abertura e reconciliação continuam em `stock_movements` e são
+correlacionados ao mesmo lote nos eventos de auditoria.
+
 ## Testes
 
 Os testes cobrem CSV e XLSX válidos, descoberta de cabeçalhos arbitrários, `IGNORE`, encoding,

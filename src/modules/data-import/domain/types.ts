@@ -202,3 +202,31 @@ export type ConflictResolution =
   | { rowNumber: number; decision: 'IGNORE' }
   | { rowNumber: number; decision: 'REPLACE_SKU'; replacementSku: string }
   | { rowNumber: number; decision: 'USE_EXISTING'; productId: string };
+
+export type ProductImportMode = 'INITIAL_MIGRATION' | 'MASTER_DATA_IMPORT';
+export type ExistingProductImportStrategy = 'ASSOCIATE_ONLY' | 'UPDATE_MASTER_DATA';
+export type MasterQuantityImportStrategy =
+  'IGNORE_EXTERNAL_QUANTITY' | 'RECONCILE_TO_EXTERNAL_QUANTITY';
+
+export interface ConfirmProductImportOptions {
+  batchId: string;
+  mode: ProductImportMode;
+  existingProductStrategy: ExistingProductImportStrategy;
+  stockLocationId?: string;
+  masterQuantityStrategy?: MasterQuantityImportStrategy;
+}
+
+export interface ProductImportReport {
+  batchId: string;
+  importMode: ProductImportMode;
+  applied: boolean;
+  productsCreated: number;
+  productsAssociated: number;
+  productsUpdated: number;
+  categoriesCreated: number;
+  movementsCreated: number;
+  linesIgnored: number;
+  externalQuantitiesIgnored: number;
+  warnings: number;
+  errors: number;
+}

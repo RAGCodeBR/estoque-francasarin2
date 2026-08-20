@@ -8,8 +8,8 @@ legados e não tenta adivinhar que `COD`, `CODIGO` ou qualquer outro nome signif
 
 O Bloco 2 implementa leitura, descoberta de cabeçalhos, staging e dry-run. O Bloco 3 amplia esse
 domínio com ValueMapping configurável, validação estruturada, categorias candidatas, identificação
-segura de produtos e uma barreira de confirmação. A promoção para `products` e a geração de
-movimentos de saldo continuam fora do escopo.
+segura de produtos e uma barreira de confirmação. O Bloco 5 fornece o motor de estoque e o Bloco 6
+implementa a promoção definitiva e transacional de produtos.
 
 ## Fluxo implementado
 
@@ -28,12 +28,15 @@ arquivo CSV/XLSX
   → candidatos, sugestões, classificação e conflitos
   → dry-run persistido somente no staging
   → barreira de confirmação
-  → promoção futura pelo motor transacional
+  → confirmação administrativa do lote
+  → categorias + produtos + mapeamentos
+  → movimentos pelo motor transacional
+  → relatório e status COMPLETED
 ```
 
-Não existe contrato de escrita para `products`, `stock_balances` ou `stock_movements` no módulo de
-importação. O port `ImportStagingRepository` oferece somente operações sobre lote, linhas e análise
-de staging. Suas implementações devem tornar atômicos `createBatchWithRows` e `saveDryRun`.
+O port `ImportStagingRepository` continua restrito ao lote, linhas e análise. O port separado
+`ImportConfirmationRepository` não oferece escrita direta: sua implementação chama apenas
+`confirm_product_import`. Produtos e saldos nunca são alterados pelo parser, dry-run ou frontend.
 
 O acesso remoto a `import_batches`, `import_rows`, `external_entity_mappings` e ao bucket privado
 `import-files` exige perfil ativo com role `ADMIN`. `VIEWER`, `STOCK_OPERATOR`, usuários sem role e
@@ -43,8 +46,9 @@ anônimos não recebem acesso ao staging ou aos arquivos.
 
 - `domain`: tipos canônicos, `ColumnMapping`, normalização, validação e erros.
 - `parsers`: leitores CSV/XLSX e descoberta de cabeçalhos.
-- `application`: casos de uso `stageImportFile` e `runImportDryRun`.
-- `ports`: contratos para staging e consulta somente-leitura de produtos existentes.
+- `application`: casos de uso `stageImportFile`, `runImportDryRun` e `confirmProductImport`.
+- `ports`: contratos para staging, consultas somente-leitura e confirmação transacional.
+- `infrastructure`: hash de arquivo e adaptador da RPC de confirmação Supabase.
 - `config`: limites seguros e configuráveis.
 
 O módulo não importa React e sua API pública está em `src/modules/data-import/index.ts`.
@@ -229,8 +233,9 @@ O estado por linha é separado da ação:
 - `CONFLICT`: identificadores contraditórios, duplicidade ou decisão inválida;
 - `IGNORED`: linha vazia, decisão explícita ou registro idêntico.
 
-Quantidade inicial em `UPDATE_CANDIDATE` é apenas uma proposta. Quando a promoção for implementada,
-ela deverá criar movimento `MIGRATION_OPENING_BALANCE`; nunca atualizar saldo diretamente.
+Quantidade inicial em `UPDATE_CANDIDATE` é apenas uma proposta até a confirmação. Em
+`INITIAL_MIGRATION`, ela chama `apply_migration_opening_balance` e cria
+`MIGRATION_OPENING_BALANCE` vinculado ao lote; nunca atualiza saldo diretamente.
 
 ## Resolução de conflitos
 
@@ -248,14 +253,18 @@ Categorias inexistentes usam decisão separada por nome normalizado. A lista
 
 ## Confirmação e promoção
 
-`assertImportConfirmable` é uma barreira de domínio, não uma operação de promoção. Ela rejeita lotes
+`assertImportConfirmable` é a barreira pura usada antes da chamada remota. Ela rejeita lotes
 com qualquer linha `ERROR` ou `CONFLICT` e também rejeita candidaturas de categoria não aprovadas.
 Avisos de nome semelhante não fazem merge: a linha permanece `NEW` para uma decisão humana.
 
-Promoção para tabelas oficiais permanece deliberadamente bloqueada neste bloco. Ela só deve ser
-implementada quando o motor de estoque puder garantir transação, idempotência, movimentos de
-abertura e compensações. O lote, os dois mapeamentos e o dry-run preservam os dados necessários para
-essa etapa futura.
+A RPC repete essas verificações no banco e adiciona validações contra preview obsoleto, duplicidade
+de SKU/EAN/ID externo e correspondências divergentes. `INITIAL_MIGRATION` cria saldo apenas como
+primeiro movimento do produto. `MASTER_DATA_IMPORT` exige opção explícita se a quantidade estiver
+presente; reconciliar cria `ADJUSTMENT_POSITIVE` ou `ADJUSTMENT_NEGATIVE` vinculado ao lote.
+
+O lote é confirmado em uma transação única. Uma falha na última linha desfaz inclusive categorias,
+produtos e movimentos criados nas primeiras linhas. Um lote `COMPLETED` é replayável somente com as
+mesmas opções e nunca produz novos efeitos.
 
 ## Testes
 
@@ -264,4 +273,6 @@ arquivos inválidos, fórmulas, limites, compressão suspeita, múltiplas planil
 normalização decimal, aliases padrão e customizados, EAN, quantidade mínima, problemas estruturados,
 categorias candidatas e sua aprovação, identificação por ID externo/SKU/EAN, sugestões por nome sem
 merge, identificadores contraditórios, barreira de confirmação e resolução por substituição de SKU.
-As migrations também são executadas integralmente em PostgreSQL embutido.
+As migrations também são executadas integralmente em PostgreSQL embutido. A confirmação usa uma
+fixture de 220 linhas, além de cenários de associação, atualização, reconciliação, replay, rollback e
+autorização.

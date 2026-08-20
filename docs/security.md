@@ -25,12 +25,12 @@ Segredos de backend devem ser mantidos no gerenciador de secrets do ambiente de 
 
 - `ADMIN`: gerencia perfis, associações de role, cadastros, notas, staging e arquivos de importação;
   consulta auditoria.
-- `STOCK_OPERATOR`: consulta o estoque e prepara notas próprias em estados não confirmados. A futura
-  entrada, saída e perda deverá chamar o motor transacional.
+- `STOCK_OPERATOR`: consulta o estoque, prepara notas próprias e executa entrada, consumo, perda e
+  transferência exclusivamente pelas funções do motor transacional.
 - `VIEWER`: consulta cadastros, notas, saldos, movimentos e relatórios.
 
 Nenhuma role da aplicação recebe mutação direta de `stock_balances` ou `stock_movements`. Nem mesmo
-`ADMIN` substitui o futuro motor transacional.
+`ADMIN` substitui o motor transacional. Ajustes e abertura de saldo legado são administrativos.
 
 Novos usuários recebem perfil, mas nenhuma role automática. O bootstrap do primeiro `ADMIN` deve
 ser feito uma única vez pelo SQL Editor ou outro ambiente administrativo confiável, nunca pelo
@@ -61,6 +61,21 @@ Validação no cliente melhora a experiência, mas não constitui controle de se
 idempotência, limites de quantidade, não negatividade e imutabilidade do histórico devem ser
 impostos pelo banco ou backend confiável. Logs não devem conter tokens, credenciais ou conteúdo
 sensível desnecessário.
+
+As seis funções públicas de estoque concedem `EXECUTE` somente a `authenticated` e revalidam perfil
+ativo e role internamente; receber o grant não basta para executar a operação. Helpers internos não
+concedem execução a `public`, `anon` ou `authenticated`. Todas as funções privilegiadas usam
+`SECURITY DEFINER` com `search_path` fixo e referências qualificadas.
+
+Locks transacionais por chave de idempotência e produto serializam requisições concorrentes. A linha
+de saldo também é bloqueada com `FOR UPDATE`. A chave fica associada ao autor e ao payload exato,
+evitando tanto efeito duplicado quanto reutilização entre usuários. O registro de auditoria integra
+a mesma transação do movimento e do saldo.
+
+`confirm_product_import` também concede `EXECUTE` somente a `authenticated`, mas exige `ADMIN` ativo
+internamente. A função fixa `search_path`, revalida integralmente o staging e é o único caminho do
+módulo de importação para cadastros, mapeamentos e estoque. Novas colunas de resultado da promoção
+não recebem grants diretos de atualização para a Data API.
 
 Policies restringem linhas e grants por coluna preservam autoria e datas de criação. Histórico e
 auditoria não possuem mutações concedidas à Data API; `stock_movements` e `audit_logs` mantêm também

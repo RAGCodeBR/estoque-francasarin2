@@ -21,6 +21,14 @@
 - Estoque negativo é proibido por padrão.
 - Cada movimento registra autor, instante, origem, motivo e identificadores de correlação.
 - Repetir uma solicitação crítica com a mesma chave de idempotência não duplica seu efeito.
+- A chave de idempotência pertence ao usuário e ao payload original; não pode ser reaproveitada por
+  outra identidade ou operação diferente.
+- Entrada, consumo, perda e transferência exigem `ADMIN` ou `STOCK_OPERATOR`.
+- Ajustes e saldo inicial de migração exigem `ADMIN`.
+- Perdas e ajustes exigem motivo explícito.
+- No modelo central atual, transferências preservam a quantidade agregada e registram os dois locais.
+- Cada produto pode possuir no máximo um marco `MIGRATION_OPENING_BALANCE`, sempre vinculado a um
+  lote de importação válido e identificado como `Migração sistema legado`.
 
 ## Importação
 
@@ -30,6 +38,16 @@
 - A confirmação é explícita e rastreável.
 - Quantidades importadas geram movimentos de estoque; não sobrescrevem saldos.
 - Corrigir importação confirmada não altera histórico: cria compensações e uma nova execução.
+- `INITIAL_MIGRATION` pode criar cadastro e saldo inicial; saldo só nasce por
+  `MIGRATION_OPENING_BALANCE` e somente em produto sem histórico ou saldo anterior.
+- `MASTER_DATA_IMPORT` não altera quantidade por padrão. Uma coluna de quantidade exige decisão
+  explícita entre ignorar o valor ou reconciliá-lo por ajuste rastreável.
+- Produto existente só é atualizado com correspondência inequívoca e estratégia
+  `UPDATE_MASTER_DATA`; `ASSOCIATE_ONLY` preserva o cadastro atual.
+- Toda linha precisa estar classificada. `ERROR`, `CONFLICT`, categoria não aprovada ou preview
+  inconsistente bloqueia a confirmação completa.
+- Repetir um lote concluído com as mesmas opções devolve o relatório anterior sem duplicar entidades
+  ou movimentos. Opções diferentes formam conflito.
 
 ## Exportação
 

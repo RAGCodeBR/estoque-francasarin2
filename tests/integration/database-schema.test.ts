@@ -194,7 +194,9 @@ describe('migrations do esquema principal', () => {
       where namespace.nspname = 'public'
         and enum_type.typname in (
           'product_type', 'unit_type', 'location_type', 'movement_type',
-          'invoice_status', 'import_status', 'import_row_validation_state'
+          'invoice_status', 'import_status', 'import_row_validation_state',
+          'product_import_mode', 'existing_product_import_strategy',
+          'master_quantity_import_strategy', 'import_row_promotion_action'
         )
       group by enum_type.typname;
     `);
@@ -220,6 +222,13 @@ describe('migrations do esquema principal', () => {
         'CANCELLED',
       ],
       import_row_validation_state: ['VALID', 'WARNING', 'ERROR', 'CONFLICT', 'IGNORED'],
+      product_import_mode: ['INITIAL_MIGRATION', 'MASTER_DATA_IMPORT'],
+      existing_product_import_strategy: ['ASSOCIATE_ONLY', 'UPDATE_MASTER_DATA'],
+      master_quantity_import_strategy: [
+        'IGNORE_EXTERNAL_QUANTITY',
+        'RECONCILE_TO_EXTERNAL_QUANTITY',
+      ],
+      import_row_promotion_action: ['CREATED', 'ASSOCIATED', 'UPDATED', 'IGNORED'],
     });
     expect(enums.movement_type).toEqual([
       'PURCHASE_ENTRY',

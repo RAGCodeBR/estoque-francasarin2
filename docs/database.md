@@ -2,8 +2,8 @@
 
 ## Estado atual
 
-O Bloco 1 cria a modelagem principal nas três primeiras migrations. Os Blocos 2 e 3 adicionam
-metadados de staging, dry-run e validação nas migrations seguintes:
+O Bloco 1 cria a modelagem principal nas três primeiras migrations. Os blocos seguintes adicionam
+staging, validação, autorização e o motor transacional:
 
 1. `20260820160000_create_core_types_and_functions.sql`: tipos, schema privado e funções de
    integridade.
@@ -16,10 +16,13 @@ metadados de staging, dry-run e validação nas migrations seguintes:
    sugestões de revisão e candidaturas de categoria aprováveis.
 6. `20260820190000_configure_auth_roles_and_rls.sql`: roles fixas, perfil automático, helpers de
    autorização, grants mínimos, policies RLS e bucket privado de importação.
+7. `20260820200000_create_stock_transaction_engine.sql`: operações atômicas e idempotentes de
+   estoque, bloqueios de concorrência, snapshots de saldo e auditoria.
+8. `20260820210000_confirm_product_imports.sql`: modos de importação de produtos, promoção
+   transacional do staging, reconciliação explícita e relatório final.
 
-O motor transacional de estoque e a promoção definitiva da importação ainda não foram implementados.
-O acesso pela Data API agora segue uma matriz explícita de roles e permanece default-deny quando não
-existe policy permissiva.
+A promoção definitiva de produtos foi implementada sem telas. O acesso pela Data API segue uma
+matriz explícita de roles e permanece default-deny quando não existe policy permissiva.
 
 ## Convenções
 
@@ -98,24 +101,55 @@ não são promovidos antecipadamente.
 ### `stock_balances`
 
 O Bloco 1 adota um único estoque central, conforme solicitado. A PK é `product_id`, portanto existe
-um saldo consolidado por produto. A quantidade possui check de não negatividade.
+um saldo consolidado por produto. A quantidade possui check de não negatividade. `last_movement_id`
+liga o estado materializado ao último evento que o produziu.
 
 Essa tabela concede somente leitura aos três papéis. Nenhum usuário da aplicação possui `INSERT`,
-`UPDATE` ou `DELETE`. Somente o futuro motor transacional poderá alterá-la.
+`UPDATE` ou `DELETE`. Somente o motor transacional `SECURITY DEFINER` pode alterá-la.
 
 ### `stock_movements`
 
 Cada movimento registra produto, tipo, quantidade positiva, locais opcionais, nota, lote de
-importação, motivo, referência compensatória, chave de idempotência, autor e data.
+importação, motivo, referência compensatória, chave de idempotência, autor, data e snapshots
+`balance_before`/`balance_after`.
 
 - `idempotency_key` é obrigatória e globalmente única.
 - `reference_id` é uma FK para outro movimento e não pode apontar para o próprio registro.
 - Origem e destino, quando ambos informados, devem ser diferentes.
 - `created_by` é obrigatório.
 - Triggers bloqueiam `UPDATE` e `DELETE` para qualquer papel, tornando a tabela append-only.
+- Cada produto aceita no máximo um movimento `MIGRATION_OPENING_BALANCE`.
 
-O significado de débito/crédito por tipo e a atualização atômica do saldo pertencem ao motor de
-estoque e não foram implementados neste bloco.
+### Motor transacional
+
+As funções públicas são a única API de escrita de estoque:
+
+| Operação                          | Movimento                           | Efeito no saldo central | Roles                 |
+| --------------------------------- | ----------------------------------- | ----------------------- | --------------------- |
+| `receive_stock`                   | `PURCHASE_ENTRY`                    | soma                    | ADMIN, STOCK_OPERATOR |
+| `consume_stock`                   | `CONSUMPTION_EXIT`                  | subtrai                 | ADMIN, STOCK_OPERATOR |
+| `register_loss`                   | `LOSS`                              | subtrai                 | ADMIN, STOCK_OPERATOR |
+| `adjust_stock`                    | `ADJUSTMENT_POSITIVE` ou `NEGATIVE` | delta assinado          | ADMIN                 |
+| `transfer_stock`                  | `TRANSFER`                          | preserva o total        | ADMIN, STOCK_OPERATOR |
+| `apply_migration_opening_balance` | `MIGRATION_OPENING_BALANCE`         | soma                    | ADMIN                 |
+
+Cada chamada valida sessão, perfil ativo, role, produto, quantidade e locais. A transação adquire
+locks consultivos pela chave de idempotência e pelo produto e depois bloqueia a linha do saldo com
+`FOR UPDATE`. Movimento, saldo, vínculo do último movimento e auditoria confirmam juntos; qualquer
+falha desfaz todos eles.
+
+A chave de idempotência é global, limitada a 200 caracteres e vinculada ao usuário e ao payload.
+Repetir exatamente a mesma operação pelo mesmo usuário retorna o movimento original com
+`applied = false`. Reutilizar a chave com outro usuário ou payload é conflito.
+
+Como o modelo atual possui saldo central por produto, a transferência valida disponibilidade e
+registra origem/destino, mas não altera a quantidade agregada. Ela não afirma saldo individual por
+local. Uma futura adoção de saldos físicos múltiplos exige nova migration e não deve reinterpretar
+silenciosamente este modelo.
+
+O saldo inicial legado exige lote em `READY` ou `IMPORTING`, motivo fixo
+`Migração sistema legado` e cria um movimento positivo. Não existe caminho nessa operação para
+sobrescrever `stock_balances`.
 
 ## Importação e mapeamentos externos
 
@@ -123,8 +157,10 @@ estoque e não foram implementados neste bloco.
 
 Cada lote registra origem, arquivo, tamanho, hash, cabeçalhos detectados, opções de parser,
 ColumnMapping e ValueMapping versionados, categorias aprovadas para criação, resumo do dry-run,
-status, contagens, autoria, confirmação e metadados. Checks impedem contagens negativas, contagens
-classificadas acima do total e confirmação parcialmente preenchida.
+status, contagens, autoria, confirmação e metadados. Para produtos, também preserva modo, estratégia
+de atualização, decisão sobre quantidade mestre, local, início e relatório da confirmação. Checks
+impedem contagens negativas, contagens classificadas acima do total e confirmação parcialmente
+preenchida.
 
 Um índice único parcial bloqueia lotes originais ativos com o mesmo hash. Reprocessamento exige
 `duplicate_of_batch_id`, preservando a intenção e a rastreabilidade sem impedir correções futuras.
@@ -140,12 +176,39 @@ dry-run, hash opcional da linha e uma possível entidade resolvida. `(import_bat
 `validation_status`, que representa o ciclo técnico do staging, e de `dry_run_action`, que descreve
 `NEW`, `UPDATE_CANDIDATE`, `CONFLICT` ou `IGNORED`.
 
+Após a confirmação, `promotion_action`, `promoted_at` e `promotion_metadata` registram se a linha
+criou, associou, atualizou ou ignorou uma entidade. Linhas acionáveis recebem também o UUID definitivo
+em `resolved_entity_id`.
+
 ### `external_entity_mappings`
 
 A chave natural `(source_system, entity_type, external_id)` é única e aponta para um UUID interno
 genérico. Não existe FK polimórfica, pois o PostgreSQL não consegue garantir uma referência que pode
 apontar para diferentes tabelas. A validação da entidade e o registro de auditoria serão
-responsabilidade do fluxo de mapeamento futuro.
+responsabilidade do fluxo específico; a confirmação de produtos já os executa transacionalmente.
+
+### Confirmação definitiva de produtos
+
+`confirm_product_import` aceita dois modos:
+
+- `INITIAL_MIGRATION`: cria ou associa produtos e transforma quantidade positiva em
+  `MIGRATION_OPENING_BALANCE` vinculado ao lote.
+- `MASTER_DATA_IMPORT`: importa cadastro e exige estratégia explícita quando o arquivo possui coluna
+  de quantidade: `IGNORE_EXTERNAL_QUANTITY` ou `RECONCILE_TO_EXTERNAL_QUANTITY`.
+
+`ASSOCIATE_ONLY` preserva campos do produto encontrado; `UPDATE_MASTER_DATA` permite atualizá-los
+somente quando external mapping, UUID resolvido, SKU e EAN convergem para um único produto.
+Correspondências contraditórias, identificadores duplicados, categoria não aprovada, linha sem
+classificação ou estado crítico abortam o lote.
+
+Uma trava consultiva global serializa confirmações de produto, adequada à migração inicial de
+centenas e preparada para milhares de linhas com prioridade em consistência. O lote inteiro é uma
+unidade transacional: categorias, produtos, mapeamentos, movimentos, linhas, auditoria e status são
+confirmados juntos ou revertidos juntos.
+
+O relatório persistido contém produtos criados, associados e atualizados, categorias e movimentos
+criados, linhas ignoradas, quantidades externas ignoradas, warnings e erros. Replay com o mesmo lote
+e opções retorna esse relatório com `applied = false`; opções diferentes são rejeitadas.
 
 ## Auditoria
 
@@ -190,8 +253,8 @@ Além das PKs e uniques, existem índices para FKs e consultas previstas por sta
 produto/data do movimento, entidades externas e auditoria. Índices parciais evitam entradas inúteis
 para referências opcionais.
 
-Triggers `set_updated_at` mantêm timestamps mutáveis no banco. Constraints expressam as invariantes
-conhecidas sem antecipar regras do motor de estoque ou do importador.
+Triggers `set_updated_at` mantêm timestamps mutáveis no banco. Constraints, motor transacional e
+confirmação de importação expressam as invariantes conhecidas.
 
 ## Testes locais
 
@@ -203,3 +266,11 @@ Os testes alternam entre `anon` e `authenticated`, simulam o `auth.uid()` de adm
 visualizador, usuário sem role e perfil inativo, e executam consultas/mutações reais sob RLS. Storage
 é validado ao aplicar a migration em Supabase, pois suas tabelas pertencem à plataforma e não ao
 PostgreSQL embutido.
+
+`tests/integration/stock-engine.test.ts` executa as seis RPCs no PostgreSQL, cobrindo entrada,
+consumo, perda, ajustes, abertura legada, transferência, concorrência, replay idempotente, conflito
+de chave, rollback forçado, estoque negativo e usuários sem autorização.
+
+`tests/integration/product-import-confirmation.test.ts` promove uma fixture principal de 220 linhas e
+cobre replay, associação, atualização opt-in, quantidade mestre ignorada, reconciliação por
+movimento, rollback intermediário, conflitos, classificação obrigatória e autorização.

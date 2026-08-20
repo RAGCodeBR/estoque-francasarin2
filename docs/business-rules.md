@@ -1,5 +1,16 @@
 # Regras de negócio invariáveis
 
+## Autorização
+
+- Possuir sessão `authenticated` não concede autorização por si só.
+- Autorização usa exclusivamente perfil ativo e associações em `roles`/`user_roles`.
+- `user_metadata` nunca concede role ou permissão.
+- `ADMIN` gerencia cadastros, acessos e importações.
+- `STOCK_OPERATOR` consulta estoque e prepara operações permitidas, sempre por fluxos autorizados.
+- `VIEWER` possui somente consulta de estoque e relatórios.
+- Nenhum usuário da aplicação altera diretamente `stock_balances` ou `stock_movements`.
+- O último administrador ativo não pode ser removido nem desativado.
+
 ## Estoque
 
 - O frontend nunca escreve saldo diretamente.

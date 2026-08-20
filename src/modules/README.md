@@ -4,7 +4,7 @@ Cada diretório representa uma fronteira funcional. Código compartilhado só de
 quando tiver uso real em mais de um contexto. Módulos implementados expõem sua API pelo próprio
 `index.ts` e não dependem de telas.
 
-- `auth`: autenticação e sessão.
+- `auth`: Supabase Auth, sessão, roles e permissões headless; RLS permanece como autoridade final.
 - `products`: cadastro de produtos.
 - `inventory`: saldos e motor transacional de estoque.
 - `invoices`: notas e documentos de entrada.

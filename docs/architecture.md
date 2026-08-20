@@ -5,7 +5,8 @@
 O projeto é um monólito modular no frontend, com React e TypeScript, apoiado por Supabase e
 PostgreSQL. O Bloco 0 estabeleceu limites, ferramentas e contratos de segurança. Os Blocos 2 e 3
 adicionam o primeiro domínio desacoplado de React: análise segura, staging, mapeamento configurável,
-validação e identificação conservadora de dados de migração.
+validação e identificação conservadora de dados de migração. O Bloco 4 adiciona autenticação
+headless com Supabase Auth e autorização efetiva no PostgreSQL por roles e RLS.
 
 ## Organização
 
@@ -36,11 +37,20 @@ possuem acesso de escrita a produtos ou saldos. Consultas de categorias e identi
 também passam por ports somente-leitura. A barreira de confirmação é uma função pura de domínio;
 ela não promove dados.
 
+O módulo `auth` encapsula login, logout, leitura do usuário autenticado, roles e permissões para a
+futura interface. Essas permissões melhoram a experiência, mas não substituem RLS. O banco consulta
+somente `profiles`, `roles` e `user_roles`; uma sessão `authenticated` sem role não recebe acesso aos
+dados operacionais.
+
 ## Cliente Supabase
 
 `getSupabaseClient` cria sob demanda uma instância única para o navegador. A inicialização tardia
 permite executar verificações e gerar o bundle sem inventar credenciais. A aplicação falha de forma
 explícita quando tentar usar Supabase sem as duas variáveis públicas obrigatórias.
+
+Supabase Auth mantém a sessão pública do usuário. Não existe cliente administrativo no frontend e
+nenhum fluxo usa `service_role`. A criação em `auth.users` gera somente o perfil correspondente;
+roles são concedidas depois por um administrador e nunca derivadas de metadados do JWT.
 
 ## Qualidade
 

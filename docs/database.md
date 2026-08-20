@@ -14,9 +14,12 @@ metadados de staging, dry-run e validação nas migrations seguintes:
    classificação de linhas e proteção concorrente contra arquivo repetido.
 5. `20260820180000_add_import_validation_rules.sql`: estado de validação por linha, ValueMapping,
    sugestões de revisão e candidaturas de categoria aprováveis.
+6. `20260820190000_configure_auth_roles_and_rls.sql`: roles fixas, perfil automático, helpers de
+   autorização, grants mínimos, policies RLS e bucket privado de importação.
 
-O motor transacional de estoque, as políticas de acesso e a promoção definitiva da importação ainda
-não foram implementados. As tabelas estão em modo default-deny para `anon` e `authenticated`.
+O motor transacional de estoque e a promoção definitiva da importação ainda não foram implementados.
+O acesso pela Data API agora segue uma matriz explícita de roles e permanece default-deny quando não
+existe policy permissiva.
 
 ## Convenções
 
@@ -38,11 +41,21 @@ não foram implementados. As tabelas estão em modo default-deny para `anon` e `
 Extensão mínima de `auth.users`, sem duplicar email ou credenciais. Contém nome de exibição, estado
 ativo e datas de criação/atualização. A exclusão do usuário é restrita quando existe perfil.
 
+Um trigger em `auth.users` cria o perfil automaticamente usando apenas o prefixo do email como nome
+inicial. A migration também faz backfill de perfis para usuários Auth já existentes. Nenhum desses
+fluxos concede role. Alterações de ID e data de criação são bloqueadas; somente `ADMIN` pode ativar
+ou inativar outro perfil.
+
 ### `roles` e `user_roles`
 
 Papéis são dados controlados pela aplicação, identificados por código único sem diferenciação de
 maiúsculas e espaços externos. `user_roles` relaciona perfis e papéis e registra quem concedeu e
 quando. `user_metadata` não participa do modelo de autorização.
+
+A migration cadastra `ADMIN`, `STOCK_OPERATOR` e `VIEWER`. O primeiro administrador precisa ser
+atribuído uma única vez por ambiente administrativo confiável. Depois disso, RLS permite que apenas
+administradores ativos gerenciem associações. Triggers impedem remover ou desativar o último
+administrador ativo.
 
 ## Cadastros principais
 
@@ -87,8 +100,8 @@ não são promovidos antecipadamente.
 O Bloco 1 adota um único estoque central, conforme solicitado. A PK é `product_id`, portanto existe
 um saldo consolidado por produto. A quantidade possui check de não negatividade.
 
-Essa tabela não tem grants para clientes. Somente o futuro motor transacional poderá alterá-la; não
-foi criada API de mutação neste bloco.
+Essa tabela concede somente leitura aos três papéis. Nenhum usuário da aplicação possui `INSERT`,
+`UPDATE` ou `DELETE`. Somente o futuro motor transacional poderá alterá-la.
 
 ### `stock_movements`
 
@@ -142,15 +155,34 @@ edição e exclusão. A captura automática de eventos ainda não foi criada.
 
 ## Data API e RLS
 
-Todas as 16 tabelas possuem RLS habilitada. A migration de segurança revoga explicitamente todos os
-privilégios de tabela de `anon` e `authenticated`, protege o schema `private` e altera privilégios
-padrão para novos objetos.
+Todas as 16 tabelas possuem RLS e pelo menos uma policy explícita. `anon` permanece sem privilégios
+de tabela. `authenticated` recebe apenas grants compatíveis com a matriz abaixo; toda policy exige
+perfil ativo e role apropriada.
 
-Nenhuma policy permissiva foi criada, porque ainda não existem casos de uso ou matriz de acesso
-aprovados. Quando uma tabela precisar ser exposta, uma migration futura deverá conceder somente as
-operações necessárias e criar/testar as policies RLS no mesmo conjunto de mudanças.
+| Escopo                                | VIEWER         | STOCK_OPERATOR                         | ADMIN                   |
+| ------------------------------------- | -------------- | -------------------------------------- | ----------------------- |
+| Cadastros, notas, saldos e movimentos | leitura        | leitura e preparação de notas próprias | leitura e gerenciamento |
+| Roles e perfis                        | próprio acesso | próprio acesso                         | gerenciamento           |
+| Imports e mapeamentos externos        | negado         | negado                                 | leitura e staging       |
+| Auditoria                             | negado         | negado                                 | leitura                 |
+| Mutação direta de saldos/movimentos   | negado         | negado                                 | negado                  |
+
+Grants de atualização são também limitados por coluna. IDs, autoria e datas de criação não ficam
+editáveis apenas porque uma linha passou pela RLS. `stock_movements` continua protegido adicionalmente
+pelos triggers append-only.
+
+Os helpers `private.is_active_user`, `private.has_role` e `private.has_any_role` são
+`SECURITY DEFINER`, fixam `search_path` e consultam apenas tabelas de autorização. Somente as funções
+necessárias podem ser executadas por `authenticated`; o restante do schema `private` permanece sem
+exposição.
 
 Estar no schema `public` não é considerado autorização de acesso.
+
+## Storage de importação
+
+Quando o schema do Supabase Storage está disponível, a migration cria/atualiza o bucket privado
+`import-files`, com limite de 10 MiB e MIME types de CSV/XLSX. Policies de objetos permitem
+`SELECT`, `INSERT`, `UPDATE` e `DELETE` apenas a `ADMIN`. O bucket nunca é público.
 
 ## Índices e integridade
 
@@ -167,6 +199,7 @@ conhecidas sem antecipar regras do motor de estoque ou do importador.
 objetos Supabase externos necessários (`auth.users`, `anon`, `authenticated`), executa todas as
 migrations em ordem e testa o catálogo e as invariantes.
 
-Esse teste oferece execução real de PostgreSQL sem credenciais. Antes de implantação, as mesmas
-migrations ainda devem ser executadas em um ambiente Supabase isolado para validar integrações da
-plataforma, extensões, configuração da Data API e policies futuras.
+Os testes alternam entre `anon` e `authenticated`, simulam o `auth.uid()` de admin, operador,
+visualizador, usuário sem role e perfil inativo, e executam consultas/mutações reais sob RLS. Storage
+é validado ao aplicar a migration em Supabase, pois suas tabelas pertencem à plataforma e não ao
+PostgreSQL embutido.

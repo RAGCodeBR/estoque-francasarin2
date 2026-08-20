@@ -35,6 +35,10 @@ Não existe contrato de escrita para `products`, `stock_balances` ou `stock_move
 importação. O port `ImportStagingRepository` oferece somente operações sobre lote, linhas e análise
 de staging. Suas implementações devem tornar atômicos `createBatchWithRows` e `saveDryRun`.
 
+O acesso remoto a `import_batches`, `import_rows`, `external_entity_mappings` e ao bucket privado
+`import-files` exige perfil ativo com role `ADMIN`. `VIEWER`, `STOCK_OPERATOR`, usuários sem role e
+anônimos não recebem acesso ao staging ou aos arquivos.
+
 ## Estrutura do módulo
 
 - `domain`: tipos canônicos, `ColumnMapping`, normalização, validação e erros.

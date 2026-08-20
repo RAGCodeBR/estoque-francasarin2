@@ -39,14 +39,22 @@ beforeAll(async () => {
     create schema auth;
     create role anon nologin;
     create role authenticated nologin;
-    create table auth.users (id uuid primary key);
+    create function auth.uid()
+    returns uuid
+    language sql
+    stable
+    set search_path = pg_catalog
+    as $$
+      select nullif(current_setting('request.jwt.claim.sub', true), '')::uuid;
+    $$;
+    create table auth.users (id uuid primary key, email text);
   `);
 
   await runMigrations(database);
 
   await database.exec(`
-    insert into auth.users (id) values ('${ids.user}');
-    insert into public.profiles (id, display_name) values ('${ids.user}', 'Usuário de teste');
+    insert into auth.users (id, email) values ('${ids.user}', 'teste@example.com');
+    update public.profiles set display_name = 'Usuário de teste' where id = '${ids.user}';
 
     insert into public.categories (id, name, created_by, updated_by)
     values ('${ids.category}', 'Ingredientes', '${ids.user}', '${ids.user}');
@@ -268,7 +276,7 @@ describe('migrations do esquema principal', () => {
     );
   });
 
-  it('habilita RLS e mantém os papéis da Data API sem privilégios de tabela', async () => {
+  it('habilita RLS e concede somente os privilégios explícitos da Data API', async () => {
     const rlsResult = await database.query<{ relname: string }>(`
       select class.relname
       from pg_class class
@@ -281,21 +289,46 @@ describe('migrations do esquema principal', () => {
 
     expect(rlsResult.rows).toHaveLength(16);
 
-    const privilegeResult = await database.query<{ role_name: string; table_name: string }>(`
-      select role_name, table_name
-      from (values ('anon'), ('authenticated')) as roles(role_name)
-      cross join information_schema.tables
+    const anonymousPrivileges = await database.query<{ table_name: string }>(`
+      select table_name
+      from information_schema.tables
       where table_schema = 'public'
         and table_type = 'BASE TABLE'
         and (
-          has_table_privilege(role_name, format('%I.%I', table_schema, table_name), 'select')
-          or has_table_privilege(role_name, format('%I.%I', table_schema, table_name), 'insert')
-          or has_table_privilege(role_name, format('%I.%I', table_schema, table_name), 'update')
-          or has_table_privilege(role_name, format('%I.%I', table_schema, table_name), 'delete')
+          has_table_privilege('anon', format('%I.%I', table_schema, table_name), 'select')
+          or has_table_privilege('anon', format('%I.%I', table_schema, table_name), 'insert')
+          or has_table_privilege('anon', format('%I.%I', table_schema, table_name), 'update')
+          or has_table_privilege('anon', format('%I.%I', table_schema, table_name), 'delete')
         );
     `);
 
-    expect(privilegeResult.rows).toEqual([]);
+    expect(anonymousPrivileges.rows).toEqual([]);
+
+    const protectedMutations = await database.query<{
+      balance_update: boolean;
+      movement_insert: boolean;
+      movement_update: boolean;
+      movement_delete: boolean;
+      audit_insert: boolean;
+      import_delete: boolean;
+    }>(`
+      select
+        has_table_privilege('authenticated', 'public.stock_balances', 'update') as balance_update,
+        has_table_privilege('authenticated', 'public.stock_movements', 'insert') as movement_insert,
+        has_table_privilege('authenticated', 'public.stock_movements', 'update') as movement_update,
+        has_table_privilege('authenticated', 'public.stock_movements', 'delete') as movement_delete,
+        has_table_privilege('authenticated', 'public.audit_logs', 'insert') as audit_insert,
+        has_table_privilege('authenticated', 'public.import_batches', 'delete') as import_delete;
+    `);
+
+    expect(protectedMutations.rows[0]).toEqual({
+      balance_update: false,
+      movement_insert: false,
+      movement_update: false,
+      movement_delete: false,
+      audit_insert: false,
+      import_delete: false,
+    });
   });
 });
 

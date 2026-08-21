@@ -40,4 +40,17 @@ describe('getClientEnv', () => {
       }),
     ).toThrow('Variável de ambiente obrigatória ausente: VITE_SUPABASE_URL');
   });
+
+  it.each([
+    'sb_secret_example',
+    'service_role_key',
+    'e30.eyJyb2xlIjoic2VydmljZV9yb2xlIn0.signature',
+  ])('rejeita credencial administrativa no bundle Vite', (key) => {
+    expect(() =>
+      getClientEnv({
+        VITE_SUPABASE_URL: 'https://example.supabase.co',
+        VITE_SUPABASE_PUBLISHABLE_KEY: key,
+      }),
+    ).toThrow(/não pode conter uma chave administrativa/i);
+  });
 });

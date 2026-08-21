@@ -414,6 +414,20 @@ Quantidades e valores são serializados como texto; nenhum relatório converte `
 flutuante. Índices compostos cobrem os principais filtros temporais por tipo, local, usuário,
 fornecedor, produto e lote.
 
+## Dashboard
+
+`get_inventory_dashboard` agrega no banco os produtos ativos, as situações de mínimo/sem estoque e
+as movimentações dos últimos 7, 30 ou 90 dias. A resposta inclui entradas, consumo, perdas, total de
+movimentos, série de consumo, produtos mais consumidos, perdas por categoria, consumo por local e
+até 20 movimentos recentes. O período de 90 dias usa buckets semanais; os demais usam buckets
+diários.
+
+Todas as quantidades permanecem como texto decimal exato e são agrupadas por `unit_type`; KG nunca é
+somado com UN. A função tem `search_path` fixo, verifica perfil ativo e role de relatório, não concede
+acesso a `anon` e projeta somente campos operacionais. O índice existente
+`stock_movements_type_created_at_report_idx` atende o recorte por tipo/data, enquanto PKs e índices de
+FK atendem as associações, evitando índices redundantes para esta leitura.
+
 ## Exportações operacionais
 
 `export_operational_data_page` aceita tipo, filtros JSON allowlisted, UUIDs selecionados, página e
@@ -481,6 +495,18 @@ inválida, PDF quebrado, ausência de texto e extração conservadora com evidê
 agregação, precisão decimal, origem sanitizada da migração, as três roles autorizadas, anônimo,
 usuário sem role, limites de paginação e índices. O serviço TypeScript possui testes unitários de
 normalização de datas, UUIDs, pesquisa e paginação.
+
+`tests/integration/dashboard.test.ts` executa a agregação real, valida indicadores, buckets,
+rankings independentes de KG/UN, limite do histórico, as três roles autorizadas e rejeições de
+anônimo, usuário sem role e parâmetros inválidos. Os testes unitários cobrem os defaults do serviço
+e a apresentação de unidades sem mistura.
+
+`tests/integration/performance-scale.test.ts` cria 1.000 produtos, 20.000 movimentos, 10.000 linhas
+de staging e 2.000 notas. Ele valida paginação/payload, planos dos índices temporais e de staging,
+lookup externo nos dois sentidos, cobertura de todas as FKs públicas e ausência de policies
+permissivas duplicadas. Também executa o RPC completo de staging com 1.000 produtos. O parser é
+testado separadamente com um CSV real de 10.000 linhas; medições e gargalos estão documentados em
+`docs/performance.md`.
 
 `tests/integration/operational-exports.test.ts` cruza os nove schemas TypeScript com as projeções SQL,
 testa filtros, seleção específica, paginação, autorização e auditoria. Testes unitários cobrem todas

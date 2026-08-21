@@ -15,6 +15,7 @@ import {
 import { getExportDefinition } from '../../../src/modules/data-export/domain/export-definitions';
 import { parseXlsx } from '../../../src/modules/data-import/parsers/xlsx-parser';
 import { DEFAULT_IMPORT_LIMITS } from '../../../src/modules/data-import';
+import { getDocument } from 'pdfjs-dist/legacy/build/pdf.mjs';
 
 const ids = {
   product: 'd1000000-0000-4000-8000-000000000001',
@@ -97,6 +98,26 @@ class ExportRepositoryStub implements OperationalExportRepository {
 }
 
 describe('OperationalExportService', () => {
+  it('estima o total no banco sem carregar o conjunto completo', async () => {
+    const repository = new ExportRepositoryStub();
+    const total = await new OperationalExportService(repository).estimate({
+      type: 'PRODUCTS',
+      filters: { isActive: true },
+    });
+
+    expect(total).toBe(3);
+    expect(repository.requests).toEqual([
+      {
+        type: 'PRODUCTS',
+        filters: { isActive: true },
+        selectedIds: null,
+        page: 1,
+        pageSize: 1,
+      },
+    ]);
+    expect(repository.audits).toEqual([]);
+  });
+
   it('busca todas as páginas, normaliza filtros/seleção e audita somente após gerar', async () => {
     const repository = new ExportRepositoryStub();
     const service = new OperationalExportService(repository, {
@@ -202,6 +223,13 @@ describe('OperationalExportService', () => {
         idempotencyKey: 'bad-type',
       } as unknown as OperationalExportRequest),
     ).rejects.toThrow(/Tipo de exportação/);
+    await expect(
+      service.export({
+        type: 'PRODUCTS',
+        format: 'PDF',
+        idempotencyKey: 'bad-pdf',
+      }),
+    ).rejects.toThrow(/relatórios visuais/);
     expect(repository.requests).toEqual([]);
   });
 });
@@ -220,6 +248,24 @@ describe('formatadores operacionais', () => {
     expect(text).toContain("'=HYPERLINK");
     expect(text).toContain('Café');
     expect(text).toContain('\r\n');
+  });
+
+  it.each([
+    '=1+1',
+    ' +SUM(1;1)',
+    '\t@SUM(1;1)',
+    '\r-2+3',
+    '\n=HYPERLINK("https://example.invalid")',
+    '\u00a0=WEBSERVICE("https://example.invalid")',
+    '\uFEFF=1+1',
+  ])('neutraliza CSV Injection mesmo com prefixo disfarçado: %j', (payload) => {
+    const output = serializeExport('CSV', {
+      definition,
+      rows: [{ ...productRows[0], name: payload }],
+      generatedAt,
+    });
+    const text = new TextDecoder().decode(output.bytes);
+    expect(text).toContain(`'${payload.split('"')[0] ?? payload}`);
   });
 
   it('gera XLSX OpenXML legível, com Dados/Metadados e nenhuma fórmula', () => {
@@ -280,5 +326,48 @@ describe('formatadores operacionais', () => {
     expect(xml).toContain('t="inlineStr"');
     expect(xml).toContain('=1+1');
     expect(xml).not.toContain('<f>');
+  });
+
+  it('gera PDF visual válido, paginado e com texto em português', async () => {
+    const stockDefinition = getExportDefinition('PRODUCTS_WITH_CURRENT_STOCK');
+    const rows = Array.from({ length: 31 }, (_, index): ExportRow => ({
+      product_id: `d1000000-0000-4000-8000-${String(index + 1).padStart(12, '0')}`,
+      sku: `SKU-${String(index + 1).padStart(3, '0')}`,
+      ean: null,
+      name: index === 0 ? 'Café torrado especial' : `Produto ${String(index + 1)}`,
+      category_id: ids.category,
+      category: 'Mercearia',
+      product_type: 'RAW',
+      unit: 'KG',
+      current_quantity: '12.500',
+      minimum_quantity: '5.000',
+      situation: 'OK',
+      active: true,
+      stock_updated_at: '2026-08-20T11:00:00Z',
+      product_updated_at: '2026-08-20T11:00:00Z',
+    }));
+    const output = serializeExport('PDF', {
+      definition: stockDefinition,
+      rows,
+      generatedAt,
+    });
+    expect(new TextDecoder().decode(output.bytes.slice(0, 8))).toContain('%PDF-1.4');
+    expect(output).toMatchObject({ format: 'PDF', mimeType: 'application/pdf', extension: 'pdf' });
+
+    const document = await getDocument({
+      data: output.bytes.slice(),
+      isEvalSupported: false,
+      useWorkerFetch: false,
+      disableFontFace: true,
+      stopAtErrors: true,
+    }).promise;
+    expect(document.numPages).toBe(2);
+    const page = await document.getPage(1);
+    const text = await page.getTextContent();
+    const content = text.items.map((item) => ('str' in item ? item.str : '')).join(' ');
+    expect(content).toContain('Cadastro completo de produtos');
+    expect(content).toContain('Café torrado especial');
+    expect(content).toContain('Página 1 de 2');
+    await document.destroy();
   });
 });

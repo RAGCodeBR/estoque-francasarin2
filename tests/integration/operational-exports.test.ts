@@ -317,5 +317,11 @@ describe('RPC de exportações operacionais', () => {
         and metadata ->> 'idempotency_key' = 'export:products_with_current_stock:1';
     `);
     expect(log.rows).toEqual([{ schema_version: '1', export_type: 'PRODUCTS_WITH_CURRENT_STOCK' }]);
+
+    const pdfReceipt = await jsonAs<AuditReceipt>(
+      ids.admin,
+      `public.record_administrative_export('STOCK_CURRENT', 'PDF', 3, 'export:stock:pdf:1')`,
+    );
+    expect(pdfReceipt).toMatchObject({ applied: true });
   });
 });

@@ -12,8 +12,17 @@ export const OPERATIONAL_EXPORT_TYPES = [
   'PRODUCTS_WITH_CURRENT_STOCK',
 ] as const;
 
+export const PDF_VISUAL_EXPORT_TYPES = [
+  'STOCK_CURRENT',
+  'STOCK_MOVEMENTS',
+  'LOSSES',
+  'INVOICES',
+  'PRODUCTS_WITH_CURRENT_STOCK',
+] as const;
+
 export type OperationalExportType = (typeof OPERATIONAL_EXPORT_TYPES)[number];
-export type OperationalExportFormat = 'CSV' | 'XLSX' | 'JSON';
+export type PdfVisualExportType = (typeof PDF_VISUAL_EXPORT_TYPES)[number];
+export type OperationalExportFormat = 'CSV' | 'XLSX' | 'JSON' | 'PDF';
 export type ExportCellValue = string | boolean | null;
 export type ExportRow = Readonly<Record<string, ExportCellValue>>;
 export type ExportColumnType = 'UUID' | 'TEXT' | 'BOOLEAN' | 'DECIMAL' | 'DATETIME';
@@ -62,6 +71,12 @@ export interface OperationalExportRequest {
   readonly filters?: OperationalExportFilters;
   readonly selectedIds?: readonly string[];
   readonly idempotencyKey: string;
+}
+
+export interface OperationalExportEstimateRequest {
+  readonly type: OperationalExportType;
+  readonly filters?: OperationalExportFilters;
+  readonly selectedIds?: readonly string[];
 }
 
 export interface ExportPageRequest {

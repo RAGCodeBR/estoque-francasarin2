@@ -217,7 +217,7 @@ describe('autenticação, roles e RLS', () => {
           source_type, source_name, file_hash, created_by
         ) values ('CSV', 'Viewer', 'viewer:forbidden', '${ids.viewer}');`,
       ),
-    ).rejects.toThrow(/row-level security/i);
+    ).rejects.toThrow(/permission denied|row-level security/i);
   });
 
   it('permite ao STOCK_OPERATOR preparar entrada, sem liberar importação administrativa', async () => {
@@ -240,27 +240,30 @@ describe('autenticação, roles e RLS', () => {
     expect(imports).toEqual([]);
   });
 
-  it('permite ao ADMIN gerenciar cadastros e staging de importação', async () => {
+  it('permite ao ADMIN gerenciar cadastros, mas bloqueia mutação direta do staging', async () => {
     await execAs(
       'authenticated',
       ids.admin,
       `insert into public.categories (name, created_by, updated_by)
        values ('Categoria do admin', '${ids.admin}', '${ids.admin}');`,
     );
-    await execAs(
-      'authenticated',
-      ids.admin,
-      `insert into public.import_batches (
-        source_type, source_name, file_hash, created_by
-      ) values ('CSV', 'Admin', 'admin:allowed', '${ids.admin}');`,
-    );
+    await expect(
+      execAs(
+        'authenticated',
+        ids.admin,
+        `insert into public.import_batches (
+          source_type, source_name, file_hash, created_by
+        ) values ('CSV', 'Admin', 'admin:forbidden-direct-write', '${ids.admin}');`,
+      ),
+    ).rejects.toThrow(/permission denied/i);
 
-    const imports = await queryAs<{ source_name: string }>(
-      'authenticated',
-      ids.admin,
-      `select source_name from public.import_batches where file_hash = 'admin:allowed';`,
-    );
-    expect(imports).toEqual([{ source_name: 'Admin' }]);
+    expect(
+      await queryAs<{ source_name: string }>(
+        'authenticated',
+        ids.admin,
+        `select source_name from public.import_batches where id = '${ids.importBatch}';`,
+      ),
+    ).toEqual([{ source_name: 'Legado' }]);
   });
 
   it('impede remover ou desativar o último ADMIN ativo', async () => {

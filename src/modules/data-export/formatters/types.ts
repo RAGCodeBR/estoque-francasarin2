@@ -12,3 +12,8 @@ export interface SerializedExport {
   readonly mimeType: string;
   readonly extension: string;
 }
+
+export type ExportSerializer = (
+  format: OperationalExportFormat,
+  input: ExportDocumentInput,
+) => Promise<SerializedExport>;

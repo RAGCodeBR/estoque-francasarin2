@@ -60,6 +60,9 @@ const ReportsPage = lazy(() =>
 const AuditLogsPage = lazy(() =>
   import('../features/audit/AuditLogsPage').then((module) => ({ default: module.AuditLogsPage })),
 );
+const ExportsPage = lazy(() =>
+  import('../features/exports/ExportsPage').then((module) => ({ default: module.ExportsPage })),
+);
 
 function RoutePage({ route }: { route: (typeof APP_ROUTES)[number] }) {
   switch (route.path) {
@@ -89,6 +92,8 @@ function RoutePage({ route }: { route: (typeof APP_ROUTES)[number] }) {
       return <AuditLogsPage />;
     case '/importacoes':
       return <ImportWizardPage />;
+    case '/exportacoes':
+      return <ExportsPage />;
     default:
       return <ModulePlaceholderPage route={route} />;
   }

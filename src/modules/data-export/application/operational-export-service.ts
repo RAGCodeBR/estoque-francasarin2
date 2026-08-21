@@ -5,18 +5,21 @@ import { validateExportRow } from '../domain/row-validation';
 import {
   EXPORT_SCHEMA_VERSION,
   OPERATIONAL_EXPORT_TYPES,
+  PDF_VISUAL_EXPORT_TYPES,
   type ExportLimits,
   type ExportRow,
   type OperationalExportArtifact,
+  type OperationalExportEstimateRequest,
   type OperationalExportFilters,
   type OperationalExportFormat,
   type OperationalExportRequest,
   type OperationalExportType,
 } from '../domain/types';
 import { serializeExport } from '../formatters/serialize-export';
+import type { ExportDocumentInput, ExportSerializer } from '../formatters/types';
 import type { OperationalExportRepository } from '../ports/export-repository';
 
-const EXPORT_FORMATS = ['CSV', 'XLSX', 'JSON'] as const;
+const EXPORT_FORMATS = ['CSV', 'XLSX', 'JSON', 'PDF'] as const;
 const PRODUCT_TYPES = ['RAW', 'FRACTIONATED'] as const;
 const UNITS = ['UN', 'KG'] as const;
 const LOCATION_TYPES = ['STOCK', 'CONSUMPTION'] as const;
@@ -35,6 +38,7 @@ const INVOICE_STATUSES = ['DRAFT', 'PENDING_REVIEW', 'CONFIRMED', 'CANCELLED'] a
 export interface OperationalExportServiceOptions {
   readonly limits?: Partial<ExportLimits>;
   readonly now?: () => Date;
+  readonly serialize?: ExportSerializer;
 }
 
 function assertExportType(value: unknown): OperationalExportType {
@@ -52,6 +56,15 @@ function assertFormat(value: unknown): OperationalExportFormat {
     throw new Error('Formato de exportação não suportado.');
   }
   return value as OperationalExportFormat;
+}
+
+function assertFormatAllowed(type: OperationalExportType, format: OperationalExportFormat): void {
+  if (
+    format === 'PDF' &&
+    !PDF_VISUAL_EXPORT_TYPES.includes(type as (typeof PDF_VISUAL_EXPORT_TYPES)[number])
+  ) {
+    throw new Error('PDF está disponível somente para relatórios visuais.');
+  }
 }
 
 function enumValue<T extends string>(
@@ -147,6 +160,7 @@ function timestampForFile(value: string): string {
 export class OperationalExportService {
   private readonly limits: ExportLimits;
   private readonly now: () => Date;
+  private readonly serializer: ExportSerializer;
 
   constructor(
     private readonly repository: OperationalExportRepository,
@@ -154,11 +168,39 @@ export class OperationalExportService {
   ) {
     this.limits = resolveExportLimits(options.limits);
     this.now = options.now ?? (() => new Date());
+    this.serializer =
+      options.serialize ??
+      ((format: OperationalExportFormat, input: ExportDocumentInput) =>
+        Promise.resolve(serializeExport(format, input)));
+  }
+
+  async estimate(request: OperationalExportEstimateRequest): Promise<number> {
+    const type = assertExportType(request.type);
+    const filters = normalizeFilters(type, request.filters);
+    const selectedIds = normalizeSelectedIds(request.selectedIds, this.limits);
+    const page = await this.repository.fetchPage({
+      type,
+      filters,
+      selectedIds,
+      page: 1,
+      pageSize: 1,
+    });
+    if (page.schemaVersion !== EXPORT_SCHEMA_VERSION || page.exportType !== type) {
+      throw new Error('Schema incompatível na estimativa da exportação.');
+    }
+    if (page.page !== 1 || page.pageSize !== 1) {
+      throw new Error('Paginação inconsistente na estimativa da exportação.');
+    }
+    if (page.total > this.limits.maxRows) {
+      throw new Error(`Exportação excede o limite de ${String(this.limits.maxRows)} registros.`);
+    }
+    return page.total;
   }
 
   async export(request: OperationalExportRequest): Promise<OperationalExportArtifact> {
     const type = assertExportType(request.type);
     const format = assertFormat(request.format);
+    assertFormatAllowed(type, format);
     const definition = getExportDefinition(type);
     const filters = normalizeFilters(type, request.filters);
     const selectedIds = normalizeSelectedIds(request.selectedIds, this.limits);
@@ -207,7 +249,7 @@ export class OperationalExportService {
     } while (rows.length < expectedTotal);
 
     const generatedAt = this.now().toISOString();
-    const serialized = serializeExport(format, { definition, rows, generatedAt });
+    const serialized = await this.serializer(format, { definition, rows, generatedAt });
     if (serialized.bytes.byteLength > this.limits.maxOutputBytes) {
       throw new Error('Arquivo exportado excede o limite de tamanho configurado.');
     }

@@ -132,6 +132,8 @@ describe('staging seguro de arquivos tabulares', () => {
       { file: createCsvFile('COD; cod \n1;2'), code: 'DUPLICATE_COLUMN' },
       { file: createCsvFile('COD;NOME\n1;"não fechado'), code: 'INVALID_CSV' },
       { file: createCsvFile('COD;NOME\n1;=1+1'), code: 'FORMULA_NOT_ALLOWED' },
+      { file: createCsvFile('COD;NOME\n1;"\n=1+1"'), code: 'FORMULA_NOT_ALLOWED' },
+      { file: createCsvFile('COD;NOME\n1;\u00a0@SUM(1)'), code: 'FORMULA_NOT_ALLOWED' },
       {
         file: createImportFile('dados.csv', new Uint8Array([0x43, 0x4f, 0x44, 0x0a, 0xc3, 0x28])),
         code: 'INVALID_ENCODING',

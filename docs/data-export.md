@@ -29,7 +29,7 @@ tipo + filtros/seleção
 → validação do serviço
 → páginas sanitizadas no PostgreSQL
 → validação contra schema fechado
-→ CSV, XLSX ou JSON
+→ CSV, XLSX, JSON ou PDF visual
 → verificação de tamanho
 → auditoria de conclusão
 ```
@@ -45,6 +45,9 @@ Todo arquivo usa `export_schema_version = 1`.
 - CSV: UTF-8 com BOM, separador `;`, fim de linha CRLF, bloco inicial de metadados e coluna de versão.
 - XLSX: OpenXML compactado, planilha de dados, planilha de metadados, cabeçalho congelado e filtro.
 - JSON: documento técnico com versão, tipo, data, contagem, definição de colunas e linhas.
+- PDF: relatório visual A4 paisagem, com cabeçalho, paginação e campos humanamente compreensíveis.
+  É oferecido somente para estoque atual, cadastro completo de produtos, movimentações, perdas e
+  entradas.
 
 Valores decimais permanecem texto exato. O XLSX não contém fórmulas, macros, links ou conteúdo
 incorporado. Valores perigosos para planilhas são neutralizados no CSV.
@@ -67,3 +70,15 @@ Limites padrão:
 
 Se geração, validação de schema, tamanho ou auditoria falhar, o serviço não entrega o artefato como
 concluído. O evento de auditoria registra somente tipo, formato, contagem, versão e idempotência.
+
+## Interface administrativa
+
+A rota `/exportacoes` exige `MANAGE_SYSTEM` e permite selecionar o conjunto, aplicar os filtros
+compatíveis e escolher XLSX, CSV ou, quando visualmente apropriado, PDF. A interface consulta o total
+filtrado antes de habilitar a geração. Essa contagem usa uma página mínima do mesmo RPC protegido;
+nenhum catálogo completo é carregado apenas para estimar o volume.
+
+Consultas grandes continuam paginadas no banco em lotes de 500 linhas. A serialização final roda em
+Web Worker, mantendo a thread visual disponível durante a criação de XLSX, CSV ou PDF. O download só
+é liberado depois da validação de schema, do limite de tamanho e do registro idempotente em
+`audit_logs`.

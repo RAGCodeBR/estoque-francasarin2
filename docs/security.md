@@ -5,6 +5,8 @@
 Somente `VITE_SUPABASE_URL` e `VITE_SUPABASE_PUBLISHABLE_KEY` são aceitos no frontend. Qualquer
 variável `VITE_` pode ser lida por quem baixar o bundle. Portanto `service_role`, senhas do banco,
 JWT secrets e connection strings administrativas são proibidos no frontend, no Git e em fixtures.
+Além da convenção, a inicialização rejeita `sb_secret_`, texto `service_role` e JWT legado cuja role
+seja `service_role` caso sejam colocados acidentalmente na variável pública.
 
 Segredos de backend devem ser mantidos no gerenciador de secrets do ambiente de execução. O arquivo
 `.env.example` contém apenas nomes e exemplos não funcionais; arquivos `.env*` reais são ignorados.
@@ -129,11 +131,11 @@ incluem identificadores humanos e omitem deliberadamente credenciais, dados inte
 staging bruto e caminhos de Storage. O adaptador rejeita campos extras, tipos não escalares e nomes
 sensíveis mesmo que uma regressão futura do banco tente retorná-los.
 
-O CSV neutraliza células iniciadas por `=`, `+`, `-` ou `@`; o XLSX grava conteúdo como `inlineStr`
-e não cria elementos de fórmula. Limites de linhas, seleção, célula e bytes reduzem risco de consumo
-excessivo de memória. Se a quantidade total mudar entre páginas, a operação é abortada e não recebe
-evento de conclusão. A auditoria contém apenas tipo, formato, contagem, versão e idempotência, nunca
-o conteúdo exportado.
+O CSV neutraliza células iniciadas por `=`, `+`, `-` ou `@`, inclusive após whitespace Unicode,
+quebra de linha ou BOM; o XLSX grava conteúdo como `inlineStr` e não cria elementos de fórmula.
+Limites de linhas, seleção, célula e bytes reduzem risco de consumo excessivo de memória. Se a
+quantidade total mudar entre páginas, a operação é abortada e não recebe evento de conclusão. A
+auditoria contém apenas tipo, formato, contagem, versão e idempotência, nunca o conteúdo exportado.
 
 As seis RPCs de relatório concedem `EXECUTE` apenas a `authenticated` e revalidam perfil ativo e
 role `ADMIN`, `STOCK_OPERATOR` ou `VIEWER`. Elas usam `SECURITY DEFINER` com `search_path` fixo,
@@ -157,6 +159,10 @@ As RPCs de importação operacional concedem `EXECUTE` a `authenticated`, mas ex
 role `ADMIN` internamente. O banco repete a allowlist de campos por tipo, recusa qualquer quantidade
 em importação de cadastro e pagina o preview em até 500 linhas. Conflitos e categorias candidatas
 bloqueiam a confirmação até resolução explícita.
+
+`import_batches`, `import_rows` e `external_entity_mappings` concedem somente leitura administrativa
+à Data API. `INSERT`, `UPDATE` e `DELETE` diretos são revogados; as mutações pertencem exclusivamente
+às RPCs que revalidam o payload e registram a operação.
 
 Na reconciliação, locks consultivos por produto usam a mesma chave do motor de estoque. Todos os
 snapshots são revalidados antes do primeiro ajuste; mudança concorrente lança erro de serialização e

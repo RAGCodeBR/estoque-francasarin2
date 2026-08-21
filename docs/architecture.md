@@ -221,3 +221,20 @@ saldos mostrados depois de saídas e perdas são os campos `newBalance` devolvid
 nunca cálculos locais. Relatórios e logs usam filtros e páginas enviados às RPCs correspondentes.
 Cada tela de domínio é carregada sob demanda para manter parsers XML/PDF e módulos administrativos
 fora do bundle inicial.
+
+A tela de exportações compõe o serviço operacional existente com seleção de conjunto, filtros
+aplicados no PostgreSQL e estimativa de volume. A consulta continua paginada em lotes de até 500
+linhas e a serialização final ocorre em Web Worker para não bloquear a thread visual. CSV, XLSX e os
+PDFs aplicáveis só são liberados após validação, limite de tamanho e auditoria administrativa
+idempotente.
+
+O dashboard consulta uma única projeção agregada e protegida no PostgreSQL. O React escolhe apenas
+um período permitido (7, 30 ou 90 dias), apresenta o resultado e nunca recompõe indicadores a partir
+de coleções completas. Contagens de operações e quantidades são conceitos separados; KG e UN
+possuem totais, séries e rankings independentes para impedir somas sem significado. A projeção atende
+`ADMIN`, `STOCK_OPERATOR` e `VIEWER` ativos pela mesma fronteira de autorização dos relatórios.
+
+A auditoria de escalabilidade e seus limiares operacionais estão em `docs/performance.md`. Os testes
+de volume preservam paginação, payload limitado e planos indexados. Otimizações futuras baseiam-se em
+`pg_stat_statements`/`EXPLAIN`, não em índices especulativos; loops transacionais nunca são movidos
+para o React apenas para reduzir tempo aparente.

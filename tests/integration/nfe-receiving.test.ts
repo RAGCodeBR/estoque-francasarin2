@@ -10,6 +10,7 @@ const migrationsDirectory = resolve(process.cwd(), 'supabase', 'migrations');
 const ids = {
   admin: 'aa000000-0000-4000-8000-000000000001',
   operator: 'aa000000-0000-4000-8000-000000000002',
+  otherOperator: 'aa000000-0000-4000-8000-000000000004',
   viewer: 'aa000000-0000-4000-8000-000000000003',
   category: 'bb000000-0000-4000-8000-000000000001',
   stock: 'cc000000-0000-4000-8000-000000000001',
@@ -35,6 +36,7 @@ const accessKeys = {
   rollback: createAccessKey('3526081122233300018155001000000123112345681'),
   viewer: createAccessKey('3526081122233300018155001000000123112345682'),
   anonymous: createAccessKey('3526081122233300018155001000000123112345683'),
+  ownership: createAccessKey('3526081122233300018155001000000123112345684'),
 } as const;
 
 async function runMigrations(): Promise<void> {
@@ -130,13 +132,16 @@ beforeAll(async () => {
     insert into auth.users (id, email) values
       ('${ids.admin}', 'admin@example.com'),
       ('${ids.operator}', 'operator@example.com'),
-      ('${ids.viewer}', 'viewer@example.com');
+      ('${ids.viewer}', 'viewer@example.com'),
+      ('${ids.otherOperator}', 'other-operator@example.com');
     insert into public.user_roles (profile_id, role_id, granted_by)
       select '${ids.admin}', id, '${ids.admin}' from public.roles where code = 'ADMIN';
     insert into public.user_roles (profile_id, role_id, granted_by)
       select '${ids.operator}', id, '${ids.admin}' from public.roles where code = 'STOCK_OPERATOR';
     insert into public.user_roles (profile_id, role_id, granted_by)
       select '${ids.viewer}', id, '${ids.admin}' from public.roles where code = 'VIEWER';
+    insert into public.user_roles (profile_id, role_id, granted_by)
+      select '${ids.otherOperator}', id, '${ids.admin}' from public.roles where code = 'STOCK_OPERATOR';
     insert into public.categories (id, name, created_by, updated_by)
       values ('${ids.category}', 'NF-e', '${ids.admin}', '${ids.admin}');
     insert into public.locations (id, name, location_type, created_by, updated_by)
@@ -406,6 +411,42 @@ describe('entrada transacional por NF-e XML', () => {
         '11222333000181', 'Fornecedor', null, '[]'::jsonb
       );`),
       ).rejects.toThrow(/permission denied/i);
+    } finally {
+      await resetIdentity();
+    }
+  });
+
+  it('impede IDOR: operador não consulta, revisa nem confirma importação de outro operador', async () => {
+    const importId = await stageAs(ids.operator, {
+      hash: '9'.repeat(64),
+      accessKey: accessKeys.ownership,
+      invoiceNumber: 'OWNERSHIP',
+      items: readyItems,
+    });
+
+    expect(
+      await queryAs<{ id: string }>(
+        ids.otherOperator,
+        `select id::text from public.invoice_imports where id = '${importId}';`,
+      ),
+    ).toEqual([]);
+
+    await assumeIdentity('authenticated', ids.otherOperator);
+    try {
+      await expect(
+        database.query(`select public.review_nfe_import(
+          '${importId}'::uuid,
+          '${ids.supplier}'::uuid,
+          '[]'::jsonb
+        );`),
+      ).rejects.toThrow(/not owned by current user/i);
+      await expect(
+        database.query(`select public.confirm_nfe_import(
+          '${importId}'::uuid,
+          '${ids.stock}'::uuid,
+          'idor:forbidden'
+        );`),
+      ).rejects.toThrow(/not owned by current user/i);
     } finally {
       await resetIdentity();
     }

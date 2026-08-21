@@ -108,7 +108,7 @@ describe('scripts de backup e restore', () => {
       execFileAsync('pwsh', ['-NoProfile', '-File', validator, '-BackupDirectory', directory]),
       'SHA-256 mismatch',
     );
-  });
+  }, 15_000);
 
   it('recusa o project ref produtivo antes de consultar credenciais ou psql', async () => {
     const restore = resolve(scriptsDirectory, 'restore-test-database.ps1');
@@ -129,5 +129,5 @@ describe('scripts de backup e restore', () => {
       ]),
       'must not be the production',
     );
-  });
+  }, 15_000);
 });

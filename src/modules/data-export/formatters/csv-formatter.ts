@@ -2,7 +2,7 @@ import type { ExportCellValue } from '../domain/types';
 import { dataHeaders, dataValues, metadataRows } from './document-rows';
 import type { ExportDocumentInput, SerializedExport } from './types';
 
-const FORMULA_PREFIX = /^[\t\r ]*[=+\-@]/;
+const FORMULA_PREFIX = /^[\p{White_Space}\uFEFF]*[=+\-@]/u;
 
 function safeText(value: ExportCellValue): string {
   if (value === null) return '';

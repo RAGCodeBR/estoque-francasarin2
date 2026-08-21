@@ -32,6 +32,12 @@ O Bloco 15 acrescenta importações operacionais futuras e reconciliação expl�
 O Bloco 16 define recuperação de desastre como responsabilidade de infraestrutura, com backup lógico
 do PostgreSQL, cópia separada do Storage, manifests SHA-256 e restore exclusivamente em teste nos
 scripts do repositório.
+O Bloco 17 estabelece o shell React responsivo, navegação e guards. O Bloco 18 conecta a primeira
+interface operacional ao domínio de migração por um assistente administrativo de dez etapas, sem
+transferir validação crítica ou promoção de dados para o React.
+O Bloco 19 substitui as estruturas vazias pelas telas operacionais de estoque, cadastros, notas,
+saídas, perdas, inventários, relatórios e auditoria. Consultas permanecem paginadas no banco e
+confirmações de estoque usam somente os serviços/RPCs transacionais já definidos.
 
 ## Organização
 
@@ -195,3 +201,23 @@ O shell é desktop-first, com sidebar fixa e header, tornando-se off-canvas em t
 Componentes reutilizáveis cobrem formulário, tabela, dialog, notificações e estados de loading, erro
 e vazio. As páginas de domínio deste bloco são apenas estruturas: não consultam coleções inteiras,
 não simulam dados operacionais e não oferecem qualquer escrita direta de saldo.
+
+A página de importação é a primeira exceção funcional às estruturas vazias. Parsing e normalização
+local fornecem feedback antes do envio; o staging, a reclassificação e a confirmação continuam em
+RPCs administrativas. O adaptador `SupabaseProductImportWizardRepository` expõe apenas staging,
+preview paginado e resolução. A promoção usa o port de confirmação já existente e o motor de
+estoque. Assim, voltar etapas ou manipular o estado React nunca concede capacidade de gravar produto
+ou saldo sem que o PostgreSQL repita autorização e invariantes.
+
+As telas operacionais compartilham paginação, estados assíncronos, filtros, seletores de entidades e
+formulários, mas não compartilham regras críticas. Estoque atual usa `report_current_stock`, inclusive
+para tipo, categoria e situação. Produtos, categorias, locais e fornecedores usam seus serviços de
+domínio e preservam inativação em vez de exclusão. Ações de cadastro aparecem somente para roles com
+`MANAGE_SYSTEM`, enquanto RLS continua sendo a autorização efetiva.
+
+Saídas em lote chamam `consume_stock_batch`; perdas chamam `register_stock_loss`; inventários seguem
+as RPCs de transição de estado; entradas fiscais só confirmam lotes revisados pelo backend. Os novos
+saldos mostrados depois de saídas e perdas são os campos `newBalance` devolvidos pelas confirmações,
+nunca cálculos locais. Relatórios e logs usam filtros e páginas enviados às RPCs correspondentes.
+Cada tela de domínio é carregada sob demanda para manter parsers XML/PDF e módulos administrativos
+fora do bundle inicial.

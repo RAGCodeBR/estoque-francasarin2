@@ -311,3 +311,34 @@ Diferença positiva chama o motor com `ADJUSTMENT_POSITIVE`; diferença negativa
 determinística por linha. A função nunca executa `UPDATE stock_balances`: movimento e saldo são
 confirmados atomicamente pelo motor. Replay devolve o relatório anterior e uma falha em qualquer
 linha desfaz movimentos, promoções e conclusão do lote.
+
+## Assistente administrativo de importação
+
+A rota `/importacoes`, protegida pela permissão `MANAGE_IMPORTS`, implementa o fluxo visual em dez
+etapas: upload, identificação de colunas, mapeamento de colunas, mapeamento de valores, validação
+local, preview, dry-run persistido, resolução de pendências, confirmação e resultado. Cada coluna
+descoberta inicia como `IGNORE`; o usuário precisa escolher explicitamente o destino e nenhum nome
+de cabeçalho externo é interpretado automaticamente.
+
+O modo `INITIAL_MIGRATION` permite mapear `opening_quantity`. O modo `MASTER_DATA_IMPORT` remove esse
+destino da interface e também é recusado no domínio e em `stage_product_import_preview` caso um
+cliente manipulado envie quantidade. Quantidades iniciais confirmadas continuam passando por
+`confirm_product_import` e `apply_migration_opening_balance`; o navegador não recebe um caminho de
+escrita para `stock_balances`.
+
+O navegador faz parsing e normalização segura para apresentar feedback imediato, mas o dry-run
+oficial é criado atomicamente no PostgreSQL por `stage_product_import_preview`. Essa RPC repete
+autorização, limites, integridade do mapeamento, EAN, decimais, duplicidade do arquivo e dos
+identificadores. `get_product_import_preview` devolve páginas de no máximo 500 linhas e não expõe
+acesso geral ao staging. Ambas exigem perfil ativo com role `ADMIN`.
+
+Categorias inexistentes precisam de aprovação explícita. Identificadores seguros contraditórios
+precisam ser associados manualmente a um produto ativo ou ignorados. Sugestões por nome permanecem
+avisos e nunca fazem merge. Depois das decisões, `resolve_operational_import` recalcula o resumo e o
+lote só chega a `READY` quando não existem erros, conflitos ou categorias pendentes. A ação final
+também verifica `INVALID = 0`, `CONFLICT = 0`, aceite de impacto e, quando aplicável, um local ativo
+de estoque.
+
+O resultado informa criados, associados, atualizados, categorias, movimentos, ignorados, warnings,
+erros, data, duração e UUID do lote. O relatório baixável é CSV UTF-8 com BOM e
+`export_schema_version = 1`; não contém tokens, credenciais ou conteúdo de autenticação.

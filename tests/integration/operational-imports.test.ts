@@ -95,6 +95,192 @@ beforeAll(async () => {
 afterAll(async () => database.close());
 
 describe('importações operacionais no banco', () => {
+  it('executa o dry-run do wizard no staging e confirma saldo inicial pelo motor', async () => {
+    await identity('authenticated', ids.admin);
+    try {
+      const rows = [
+        {
+          rowNumber: 2,
+          rawData: {
+            CODIGO: 'LEG-UI-1',
+            DESCRICAO: 'Produto legado da interface',
+            SALDO: '4,5',
+            UNIDADE: 'KG',
+            GRUPO: 'Categoria wizard',
+            TIPO: 'RAW',
+          },
+          normalizedData: {
+            sku: 'LEG-UI-1',
+            name: 'Produto legado da interface',
+            ean: null,
+            external_id: 'LEGACY-UI-1',
+            opening_quantity: '4.500',
+            minimum_quantity: '1.000',
+            unit: 'KG',
+            category: 'Categoria wizard',
+            product_type: 'RAW',
+          },
+          validationErrors: [],
+          ignored: false,
+        },
+      ];
+      const staged = await database.query<{
+        batch_id: string;
+        status: string;
+        summary: Record<string, number>;
+      }>(
+        `select * from public.stage_product_import_preview(
+          'INITIAL_MIGRATION', 'CSV', 'Sistema legado UI', 'produtos-ui.csv',
+          'product-wizard:initial', 240,
+          '["CODIGO","DESCRICAO","SALDO","UNIDADE","GRUPO","TIPO"]',
+          '[
+            {"sourceColumn":"CODIGO","targetField":"sku"},
+            {"sourceColumn":"DESCRICAO","targetField":"name"},
+            {"sourceColumn":"SALDO","targetField":"opening_quantity"},
+            {"sourceColumn":"UNIDADE","targetField":"unit"},
+            {"sourceColumn":"GRUPO","targetField":"category"},
+            {"sourceColumn":"TIPO","targetField":"product_type"}
+          ]', '{}', $1::jsonb, null
+        );`,
+        [JSON.stringify(rows)],
+      );
+      const batch = staged.rows[0];
+      expect(batch?.status).toBe('PENDING_MAPPING');
+      expect(batch?.summary).toMatchObject({
+        TOTAL: 1,
+        NEW: 1,
+        WARNING: 1,
+        CATEGORIES_NEW: 1,
+        CONFLICT: 0,
+      });
+      const batchId = batch?.batch_id ?? '';
+
+      const before = await database.query<{ count: string }>(
+        `select count(*)::text from public.products where sku = 'LEG-UI-1';`,
+      );
+      expect(before.rows[0]?.count).toBe('0');
+
+      const page = await database.query<{
+        batch_id: string;
+        total_rows: number;
+        row_number: number;
+        action: string;
+      }>(
+        `select
+          preview ->> 'batch_id' as batch_id,
+          (preview ->> 'total_rows')::integer as total_rows,
+          (preview -> 'rows' -> 0 ->> 'rowNumber')::integer as row_number,
+          preview -> 'rows' -> 0 ->> 'action' as action
+        from (select public.get_product_import_preview($1, 1, 100) as preview) result;`,
+        [batchId],
+      );
+      expect(page.rows[0]).toEqual({
+        batch_id: batchId,
+        total_rows: 1,
+        row_number: 2,
+        action: 'NEW',
+      });
+
+      const resolved = await database.query<{ invalid: number; conflict: number }>(
+        `select
+          (resolved -> 'summary' ->> 'INVALID')::integer as invalid,
+          (resolved -> 'summary' ->> 'CONFLICT')::integer as conflict
+        from (
+          select public.resolve_operational_import(
+            $1, '[]', '["Categoria wizard"]'
+          ) as resolved
+        ) result;`,
+        [batchId],
+      );
+      expect(resolved.rows[0]).toEqual({ invalid: 0, conflict: 0 });
+
+      const confirmed = await database.query<{
+        products_created: number;
+        categories_created: number;
+        movements_created: number;
+      }>(
+        `select * from public.confirm_product_import(
+          $1, 'INITIAL_MIGRATION', 'ASSOCIATE_ONLY', $2, null
+        );`,
+        [batchId, ids.location],
+      );
+      expect(confirmed.rows[0]).toMatchObject({
+        products_created: 1,
+        categories_created: 1,
+        movements_created: 1,
+      });
+
+      const movement = await database.query<{
+        movement_type: string;
+        quantity: string;
+        import_batch_id: string;
+      }>(
+        `select movement_type::text, quantity::text, import_batch_id::text
+         from public.stock_movements where import_batch_id = $1;`,
+        [batchId],
+      );
+      expect(movement.rows).toEqual([
+        {
+          movement_type: 'MIGRATION_OPENING_BALANCE',
+          quantity: '4.500',
+          import_batch_id: batchId,
+        },
+      ]);
+    } finally {
+      await root();
+    }
+  });
+
+  it('recusa saldo no modo cadastral e bloqueia usuário não administrador no wizard', async () => {
+    const rows = [
+      {
+        rowNumber: 2,
+        rawData: { SKU: 'WIZ-1', SALDO: '1' },
+        normalizedData: {
+          sku: 'WIZ-1',
+          name: 'Wizard',
+          opening_quantity: '1.000',
+          minimum_quantity: null,
+          unit: 'UN',
+          category: 'Operacional',
+          product_type: 'RAW',
+        },
+        validationErrors: [],
+        ignored: false,
+      },
+    ];
+    const sql = `select * from public.stage_product_import_preview(
+      'MASTER_DATA_IMPORT', 'CSV', 'Cadastro', 'wizard.csv', $1, 100,
+      '["SKU","NOME","SALDO","UNIDADE","CATEGORIA","TIPO"]',
+      '[
+        {"sourceColumn":"SKU","targetField":"sku"},
+        {"sourceColumn":"NOME","targetField":"name"},
+        {"sourceColumn":"SALDO","targetField":"opening_quantity"},
+        {"sourceColumn":"UNIDADE","targetField":"unit"},
+        {"sourceColumn":"CATEGORIA","targetField":"category"},
+        {"sourceColumn":"TIPO","targetField":"product_type"}
+      ]', '{}', $2::jsonb, null
+    );`;
+
+    await identity('authenticated', ids.admin);
+    try {
+      await expect(
+        database.query(sql, ['product-wizard:master-quantity', JSON.stringify(rows)]),
+      ).rejects.toThrow(/quantity is forbidden/);
+    } finally {
+      await root();
+    }
+
+    await identity('authenticated', ids.operator);
+    try {
+      await expect(
+        database.query(sql, ['product-wizard:operator', JSON.stringify(rows)]),
+      ).rejects.toThrow(/ADMIN/);
+    } finally {
+      await root();
+    }
+  });
+
   it('reconcilia por ajustes atômicos, rastreáveis e idempotentes', async () => {
     await identity('authenticated', ids.admin);
     try {

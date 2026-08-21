@@ -11,3 +11,5 @@ Thumbs.db
 .idea/
 .vscode/
 supabase/.temp/
+.codex-temp/
+outputs/

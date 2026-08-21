@@ -282,3 +282,32 @@ merge, identificadores contraditórios, barreira de confirmação e resolução 
 As migrations também são executadas integralmente em PostgreSQL embutido. A confirmação usa uma
 fixture de 220 linhas, além de cenários de associação, atualização, reconciliação, replay, rollback e
 autorização.
+
+## Importação operacional futura
+
+O fluxo operacional é identificado em `import_batches.operational_import_type` e não reutiliza
+`INITIAL_MIGRATION`. Os tipos autorizados são `PRODUCTS`, `CATEGORIES`, `LOCATIONS`, `SUPPLIERS` e
+`STOCK_RECONCILIATION`. Todos reutilizam os parsers seguros, SHA-256, staging e mapeamento manual de
+colunas; nenhum cabeçalho externo é presumido.
+
+Modelos oficiais podem ser gerados em CSV UTF-8 com BOM ou XLSX sem fórmulas. O modelo de produtos
+usa `SKU`, `EAN`, `PRODUTO`, `CATEGORIA`, `TIPO`, `UNIDADE` e `QUANTIDADE_MINIMA`. Os modelos XLSX
+incluem instruções, filtros, cabeçalho congelado e validações para enumerações.
+
+Importações de cadastro recusam `opening_quantity` e `current_quantity` no TypeScript e na RPC de
+staging. Produtos existentes só são candidatos a atualização por SKU/EAN inequívoco e a alteração
+continua opt-in. Categorias novas exigem aprovação. Conflitos podem ser ignorados ou associados
+explicitamente a uma entidade existente; a decisão permanece no staging e recalcula o dry-run.
+
+`STOCK_RECONCILIATION` exige SKU ou EAN e `current_quantity`. O preview persiste, como texto decimal
+exato, o saldo do sistema, a quantidade do arquivo, a diferença e o movimento proposto. A
+confirmação exige `ADMIN`, local `STOCK`, chave idempotente e o motivo literal
+`Reconciliação via importação`. Todos os produtos são bloqueados em ordem estável e os saldos são
+comparados novamente com o snapshot antes de criar qualquer movimento. Preview obsoleto aborta o
+lote integralmente.
+
+Diferença positiva chama o motor com `ADJUSTMENT_POSITIVE`; diferença negativa usa
+`ADJUSTMENT_NEGATIVE`; zero não cria movimento. Todo ajuste recebe `import_batch_id`, motivo e chave
+determinística por linha. A função nunca executa `UPDATE stock_balances`: movimento e saldo são
+confirmados atomicamente pelo motor. Replay devolve o relatório anterior e uma falha em qualquer
+linha desfaz movimentos, promoções e conclusão do lote.

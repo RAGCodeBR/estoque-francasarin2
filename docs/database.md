@@ -31,6 +31,8 @@ staging, validação, autorização e o motor transacional:
 14. `20260820270000_add_complete_audit_logging.sql`: auditoria completa, append-only e sanitizada.
 15. `20260820280000_add_reports.sql`: seis relatórios filtrados e paginados no PostgreSQL, fronteira
     de leitura por roles e índices específicos para período, tipo, local, responsável e referência.
+16. `20260820290000_add_operational_data_exports.sql`: exportações operacionais schema version 1,
+    filtros/seleções no banco, paginação e ampliação segura da auditoria administrativa.
 
 A promoção definitiva de produtos foi implementada sem telas. O acesso pela Data API segue uma
 matriz explícita de roles e permanece default-deny quando não existe policy permissiva.
@@ -412,6 +414,22 @@ Quantidades e valores são serializados como texto; nenhum relatório converte `
 flutuante. Índices compostos cobrem os principais filtros temporais por tipo, local, usuário,
 fornecedor, produto e lote.
 
+## Exportações operacionais
+
+`export_operational_data_page` aceita tipo, filtros JSON allowlisted, UUIDs selecionados, página e
+tamanho. A página máxima é 500 e a seleção explícita máxima é 10.000 UUIDs. A RPC exige `ADMIN`, usa
+SQL estático e retorna somente colunas predefinidas, `schema_version`, tipo, total e linhas.
+
+Os tipos disponíveis são `PRODUCTS`, `CATEGORIES`, `LOCATIONS`, `SUPPLIERS`, `STOCK_CURRENT`,
+`STOCK_MOVEMENTS`, `LOSSES`, `INVOICES` e `PRODUCTS_WITH_CURRENT_STOCK`. Notas são exportadas por
+item, repetindo a identificação humana da nota, fornecedor e produto. UUIDs permanecem para
+rastreabilidade, mas nunca são a única identificação das entidades relacionadas.
+
+Quantidades e valores monetários saem como texto decimal exato. Caminhos internos de arquivos,
+metadados de autenticação, staging bruto e credenciais não integram nenhuma projeção. A função
+`record_administrative_export` aceita os nove tipos e registra `export_schema_version = 1` somente
+depois da geração bem-sucedida do arquivo.
+
 ## Testes locais
 
 `tests/integration/database-schema.test.ts` inicia PostgreSQL embutido via PGlite, simula apenas os
@@ -463,3 +481,28 @@ inválida, PDF quebrado, ausência de texto e extração conservadora com evidê
 agregação, precisão decimal, origem sanitizada da migração, as três roles autorizadas, anônimo,
 usuário sem role, limites de paginação e índices. O serviço TypeScript possui testes unitários de
 normalização de datas, UUIDs, pesquisa e paginação.
+
+`tests/integration/operational-exports.test.ts` cruza os nove schemas TypeScript com as projeções SQL,
+testa filtros, seleção específica, paginação, autorização e auditoria. Testes unitários cobrem todas
+as páginas, limites, CSV UTF-8, neutralização de fórmulas, estrutura OpenXML, leitura do XLSX pelo
+importador e JSON técnico versionado.
+
+## Importações operacionais
+
+A migration `20260820300000_add_operational_imports.sql` adiciona o enum
+`operational_import_type`, os campos de tipo/motivo/idempotência em `import_batches` e o snapshot
+`operational_preview` em `import_rows`. Índices atendem consulta de lotes por tipo/status, replay por
+chave e identificação do produto no preview.
+
+As RPCs expostas somente a `authenticated` aplicam autorização `ADMIN` internamente:
+
+- `stage_operational_import_preview` classifica e persiste apenas staging;
+- `get_operational_import_preview` pagina até 500 linhas;
+- `resolve_operational_import` registra decisões e aprova categorias candidatas;
+- `confirm_operational_product_import` promove produtos sem quantidade;
+- `confirm_operational_master_data_import` promove categorias, locais ou fornecedores;
+- `confirm_stock_reconciliation_import` revalida o snapshot e usa
+  `private.execute_stock_movement` para cada diferença.
+
+Nenhuma grant direta de escrita foi adicionada às tabelas oficiais. O lote, suas linhas, movimentos
+e auditoria compartilham a mesma transação de confirmação.

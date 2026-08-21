@@ -37,7 +37,7 @@ export function normalizeIdentity(value: string): string {
   return value.normalize('NFKC').trim().toLocaleLowerCase('pt-BR');
 }
 
-function normalizeQuantity(value: string | null | undefined): string | null {
+export function normalizeQuantity(value: string | null | undefined): string | null {
   const normalized = normalizeText(value)?.replaceAll(/\s/g, '');
   if (!normalized) return null;
   if (normalized.startsWith('-')) throw new Error('NEGATIVE_QUANTITY');

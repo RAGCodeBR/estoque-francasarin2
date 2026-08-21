@@ -23,7 +23,8 @@
     "fflate": "0.8.3",
     "pdfjs-dist": "5.4.624",
     "react": "19.2.8",
-    "react-dom": "19.2.8"
+    "react-dom": "19.2.8",
+    "react-router": "8.3.0"
   },
   "devDependencies": {
     "@electric-sql/pglite": "0.5.5",

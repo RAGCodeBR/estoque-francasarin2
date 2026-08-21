@@ -26,7 +26,18 @@ export interface AuditLogSearch extends PageRequest {
 export type AuditLogPage = PaginatedResult<AuditLog>;
 
 export type AdministrativeExportType =
-  'PRODUCTS' | 'INVENTORY' | 'STOCK_MOVEMENTS' | 'AUDIT_LOGS' | 'IMPORT_REPORT';
+  | 'PRODUCTS'
+  | 'CATEGORIES'
+  | 'LOCATIONS'
+  | 'SUPPLIERS'
+  | 'STOCK_CURRENT'
+  | 'STOCK_MOVEMENTS'
+  | 'LOSSES'
+  | 'INVOICES'
+  | 'PRODUCTS_WITH_CURRENT_STOCK'
+  | 'INVENTORY'
+  | 'AUDIT_LOGS'
+  | 'IMPORT_REPORT';
 
 export type AdministrativeExportFormat = 'CSV' | 'XLSX' | 'JSON';
 

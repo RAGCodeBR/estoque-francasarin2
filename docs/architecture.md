@@ -25,6 +25,13 @@ O Bloco 12 completa a auditoria transacional de cadastros, estoque, notas, impor
 exportações administrativas, com consulta paginada e bloqueio preventivo de credenciais nos payloads.
 O Bloco 13 adiciona o domínio headless de relatórios. Filtros, agregações, ordenação e paginação são
 executados no PostgreSQL; o cliente recebe somente a página solicitada e decimais exatos em texto.
+O Bloco 14 implementa exportações operacionais versionadas em CSV, XLSX e JSON. Consultas são
+administrativas, paginadas e sanitizadas no banco; formatadores puros geram arquivos portáveis sem
+confundir exportação de negócio com backup do PostgreSQL.
+O Bloco 15 acrescenta importações operacionais futuras e reconciliação explícita por movimentos.
+O Bloco 16 define recuperação de desastre como responsabilidade de infraestrutura, com backup lógico
+do PostgreSQL, cópia separada do Storage, manifests SHA-256 e restore exclusivamente em teste nos
+scripts do repositório.
 
 ## Organização
 
@@ -128,6 +135,12 @@ iniciais de migração. Todas aplicam filtros e limite máximo de 100 linhas ant
 resposta. A leitura de migração usa uma fronteira `SECURITY DEFINER` estreita para não conceder ao
 `VIEWER` acesso geral ao staging nem expor hash, arquivo ou metadados do lote.
 
+O módulo `data-export` também segue `application → ports ← infrastructure`. O serviço normaliza
+filtros e seleções, percorre páginas de até 500 linhas, valida cada resposta contra um schema fechado,
+gera o arquivo em memória e só então registra a conclusão em auditoria. CSV, XLSX e JSON compartilham
+`export_schema_version = 1`; nenhum formatador recebe tabelas ou campos arbitrários. O XLSX é OpenXML
+sem fórmulas, macros, objetos ou links externos, e possui planilhas de dados e metadados.
+
 ## Cliente Supabase
 
 `getSupabaseClient` cria sob demanda uma instância única para o navegador. A inicialização tardia
@@ -143,3 +156,42 @@ roles são concedidas depois por um administrador e nunca derivadas de metadados
 TypeScript usa modo estrito e verificações adicionais. ESLint aplica regras tipadas, Prettier
 padroniza a formatação e Vitest executa testes. O gate mínimo de conclusão é lint, typecheck, testes
 e build sem falhas.
+
+## Importação operacional
+
+O domínio operacional de `data-import` mantém `application → ports ← infrastructure`.
+`previewOperationalImport` usa os parsers tabulares existentes, valida um
+`OperationalColumnMapping` específico por tipo e entrega somente linhas normalizadas ao staging.
+`OperationalImportService` controla preview paginado, resolução e confirmação; o adaptador Supabase
+não conhece nem oferece mutação direta de saldo. Templates oficiais são gerados em CSV/XLSX e
+continuam independentes das telas.
+
+`STOCK_RECONCILIATION` é uma fronteira própria, não uma opção oculta da importação de produtos. A
+regra crítica reside na RPC: ela bloqueia produtos, verifica que o saldo não mudou desde o preview e
+chama o motor transacional para gerar ajustes. O React futuro apenas apresentará o preview e
+solicitará a confirmação administrativa.
+
+## Backup e restore
+
+Backup/restore não é um módulo React nem uma RPC da Data API. Os helpers em `scripts/backup` são
+operações de infraestrutura: recusam gravar dumps dentro do repositório, não aceitam secrets por
+argumento, produzem hashes e separam PostgreSQL dos objetos Storage. O restore automatizado aceita
+somente um project ref de teste diferente da produção, exige confirmação literal e usa uma única
+transação com interrupção no primeiro erro.
+
+Migrations versionadas e o histórico `supabase_migrations` acompanham o dump, mas permanecem fontes
+distintas que precisam ser comparadas. Restore produtivo físico/PITR ou lógico continua manual,
+aprovado e precedido por exercício isolado.
+
+## Interface web
+
+A interface React usa React Router em modo declarativo. `AuthProvider` observa a sessão pública do
+Supabase e carrega roles exclusivamente de `roles`/`user_roles`; `RequireSession` e
+`RequirePermission` controlam navegação e experiência, sem substituir RLS ou autorização das RPCs.
+A configuração de rotas é única e alimenta simultaneamente router, sidebar e atalhos, evitando que a
+navegação visível divirja das permissões declaradas.
+
+O shell é desktop-first, com sidebar fixa e header, tornando-se off-canvas em tablets e celulares.
+Componentes reutilizáveis cobrem formulário, tabela, dialog, notificações e estados de loading, erro
+e vazio. As páginas de domínio deste bloco são apenas estruturas: não consultam coleções inteiras,
+não simulam dados operacionais e não oferecem qualquer escrita direta de saldo.

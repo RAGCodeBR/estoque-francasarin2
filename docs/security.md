@@ -123,6 +123,18 @@ portanto somente `ADMIN` atravessa a RLS; páginas são limitadas a 100.
 contagem e chave de correlação. A função não aceita conteúdo, filtros livres, caminhos com
 credenciais ou qualquer secret.
 
+`export_operational_data_page` exige `ADMIN` ativo e valida tipo, página, seleção e uma allowlist de
+filtros específica para cada conjunto. Não usa SQL dinâmico. As projeções SQL nomeiam cada coluna,
+incluem identificadores humanos e omitem deliberadamente credenciais, dados internos de Auth,
+staging bruto e caminhos de Storage. O adaptador rejeita campos extras, tipos não escalares e nomes
+sensíveis mesmo que uma regressão futura do banco tente retorná-los.
+
+O CSV neutraliza células iniciadas por `=`, `+`, `-` ou `@`; o XLSX grava conteúdo como `inlineStr`
+e não cria elementos de fórmula. Limites de linhas, seleção, célula e bytes reduzem risco de consumo
+excessivo de memória. Se a quantidade total mudar entre páginas, a operação é abortada e não recebe
+evento de conclusão. A auditoria contém apenas tipo, formato, contagem, versão e idempotência, nunca
+o conteúdo exportado.
+
 As seis RPCs de relatório concedem `EXECUTE` apenas a `authenticated` e revalidam perfil ativo e
 role `ADMIN`, `STOCK_OPERATOR` ou `VIEWER`. Elas usam `SECURITY DEFINER` com `search_path` fixo,
 referências qualificadas e SQL estático. Essa fronteira permite compor leituras entre tabelas com
@@ -140,6 +152,28 @@ As RPCs de PDF aplicam a mesma autorização. `stage_pdf_invoice` guarda somente
 `review_pdf_invoice` exige decisões explícitas e autoria; `confirm_pdf_invoice` rejeita staging sem
 revisão humana completa. O núcleo de confirmação XML não é exposto depois da especialização por
 fonte, impedindo que um PDF seja confirmado pela RPC de XML.
+
+As RPCs de importação operacional concedem `EXECUTE` a `authenticated`, mas exigem perfil ativo com
+role `ADMIN` internamente. O banco repete a allowlist de campos por tipo, recusa qualquer quantidade
+em importação de cadastro e pagina o preview em até 500 linhas. Conflitos e categorias candidatas
+bloqueiam a confirmação até resolução explícita.
+
+Na reconciliação, locks consultivos por produto usam a mesma chave do motor de estoque. Todos os
+snapshots são revalidados antes do primeiro ajuste; mudança concorrente lança erro de serialização e
+reverte a transação. Somente `private.execute_stock_movement` altera o saldo, com motivo fixo,
+`import_batch_id` e idempotência por linha. Nenhuma nova policy ou grant permite `UPDATE` direto em
+`stock_balances` ou mutação de `stock_movements`.
+
+## Backups de infraestrutura
+
+Backups lógicos e objetos Storage são dados sensíveis, mesmo sem credenciais explícitas. Devem ser
+criptografados, mantidos fora do repositório e acessíveis por identidade administrativa separada da
+aplicação. SHA-256 detecta alteração, mas não fornece confidencialidade.
+
+Os scripts não aceitam senha, PAT, `service_role` ou connection string pela linha de comando. A URL
+do único restore automatizado fica em variável de ambiente, deve identificar um projeto de teste e
+é recusada quando contém o project ref produtivo. Não há tela, endpoint ou script de restore de
+produção.
 
 ## Dependências
 

@@ -126,9 +126,22 @@
 
 ## Exportação
 
-- Exportações respeitam autorização, escopo e auditoria.
+- Exportações operacionais exigem `ADMIN`, respeitam escopo e são auditadas após o arquivo existir.
 - Senhas, tokens, secrets e credenciais nunca são exportados.
 - Formatos externos não definem o modelo interno; adaptadores fazem o mapeamento.
+- Cada arquivo informa `export_schema_version = 1`; alterar colunas incompatíveis exige nova versão.
+- CSV usa UTF-8 com BOM, `;`, CRLF e neutralização de valores interpretáveis como fórmula.
+- XLSX usa somente células inline, sem fórmulas, macros, objetos incorporados ou conexões externas.
+- JSON é técnico, opcional e autocontido com metadados, colunas e linhas.
+- Todos os registros, filtros e seleção de UUIDs são resolvidos no banco. O navegador não carrega
+  uma coleção diferente para depois filtrá-la.
+- UUIDs são preservados para rastreabilidade, sempre acompanhados por SKU, nome, documento, número
+  fiscal, local ou outra identificação humana aplicável.
+- `PRODUCTS_WITH_CURRENT_STOCK` combina cadastro e saldo consolidado para portabilidade; isso não
+  autoriza futura importação a sobrescrever saldo.
+- O serviço limita por padrão 100.000 linhas, 50 MiB de saída, 32.767 caracteres por célula e
+  páginas de 500 registros.
+- Exportação operacional não substitui backup consistente nem procedimento de restauração.
 
 ## Relatórios
 
@@ -142,3 +155,13 @@
 - Quantidades e valores monetários preservam precisão decimal e são entregues como texto.
 - `ADMIN`, `STOCK_OPERATOR` e `VIEWER` podem consultar relatórios quando o perfil está ativo.
 - Relatório de migração não expõe dados brutos, arquivo, hash ou metadados internos do staging.
+
+## Importação operacional futura
+
+- Importação operacional de cadastro nunca aceita quantidade atual. Esse campo pertence somente ao
+  fluxo separado `STOCK_RECONCILIATION`.
+- Reconciliação compara o snapshot do saldo com a quantidade externa e exige nova análise se o
+  estoque mudar antes da confirmação.
+- Reconciliação confirmada por `ADMIN` usa o motivo `Reconciliação via importação` e cria apenas
+  `ADJUSTMENT_POSITIVE` ou `ADJUSTMENT_NEGATIVE` vinculados ao `import_batch_id`.
+- Diferença zero não cria movimento. Nenhuma reconciliação sobrescreve `stock_balances`.

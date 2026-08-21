@@ -14,5 +14,6 @@ quando tiver uso real em mais de um contexto. Módulos implementados expõem sua
 - `losses`: perdas rastreáveis com motivo, observação e movimento `LOSS` obrigatório.
 - `reports`: seis consultas headless, filtradas e paginadas no PostgreSQL, sem mutações.
 - `audit`: consulta administrativa paginada, eventos imutáveis e registro seguro de exportações.
-- `data-import`: pipeline seguro de CSV/XLSX, staging, validação, dry-run e confirmação transacional.
-- `data-export`: exportações autorizadas e sanitizadas.
+- `data-import`: pipeline seguro de CSV/XLSX, templates oficiais, staging, validação, dry-run,
+  importação operacional e reconciliação transacional de saldos por ajustes.
+- `data-export`: CSV/XLSX/JSON operacionais, versionados, paginados, auditados e sanitizados.

@@ -23,6 +23,11 @@ interface WorksheetDescriptor {
   path: string;
 }
 
+export interface XlsxWorksheetInfo {
+  name: string;
+  position: number;
+}
+
 const xmlParser = new XMLParser({
   ignoreAttributes: false,
   attributeNamePrefix: '@_',
@@ -469,6 +474,25 @@ function isNonEmptyRow(row: { cells: readonly (string | null)[] }): boolean {
   return row.cells.some((value) => value !== null && value.trim() !== '');
 }
 
+export function listXlsxWorksheets(
+  bytes: Uint8Array,
+  limits: ImportLimits,
+): readonly XlsxWorksheetInfo[] {
+  inspectXlsxContainer(bytes, limits);
+
+  let entries: Readonly<Record<string, Uint8Array>>;
+  try {
+    entries = unzipSync(bytes);
+  } catch {
+    throw new ImportFileError('INVALID_XLSX', 'Não foi possível descompactar o arquivo XLSX.');
+  }
+
+  return readWorksheetDescriptors(entries).map(({ name }, index) => ({
+    name,
+    position: index + 1,
+  }));
+}
+
 export function parseXlsx(
   bytes: Uint8Array,
   limits: ImportLimits,
@@ -485,16 +509,11 @@ export function parseXlsx(
 
   const worksheets = readWorksheetDescriptors(entries);
   const sharedStrings = readSharedStrings(entries);
-  const parsedWorksheets = worksheets.map((worksheet) => ({
-    worksheet,
-    rows: readWorksheetRows(entries, worksheet, sharedStrings, limits),
-  }));
-
-  let selected = options.worksheetName
-    ? parsedWorksheets.find(({ worksheet }) => worksheet.name === options.worksheetName)
+  const requestedWorksheet = options.worksheetName
+    ? worksheets.find(({ name }) => name === options.worksheetName)
     : undefined;
 
-  if (options.worksheetName && !selected) {
+  if (options.worksheetName && !requestedWorksheet) {
     throw new ImportFileError(
       'WORKSHEET_NOT_FOUND',
       `Planilha não encontrada: ${options.worksheetName}`,
@@ -502,7 +521,18 @@ export function parseXlsx(
     );
   }
 
+  let selected = requestedWorksheet
+    ? {
+        worksheet: requestedWorksheet,
+        rows: readWorksheetRows(entries, requestedWorksheet, sharedStrings, limits),
+      }
+    : undefined;
+
   if (!selected) {
+    const parsedWorksheets = worksheets.map((worksheet) => ({
+      worksheet,
+      rows: readWorksheetRows(entries, worksheet, sharedStrings, limits),
+    }));
     const nonEmptyWorksheets = parsedWorksheets.filter(({ rows }) => rows.some(isNonEmptyRow));
     if (nonEmptyWorksheets.length > 1) {
       throw new ImportFileError(

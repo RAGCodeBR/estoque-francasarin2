@@ -1,4 +1,5 @@
 export { assertImportConfirmable } from './application/assert-import-confirmable';
+export { analyzeLegacyMigrationFile } from './application/analyze-legacy-migration-file';
 export { confirmProductImport } from './application/confirm-product-import';
 export { stageImportFile } from './application/stage-import-file';
 export { runImportDryRun } from './application/run-import-dry-run';
@@ -7,6 +8,10 @@ export { inspectProductImportFile } from './application/inspect-product-import-f
 export { isProductImportConfirmable, serializeImportReport } from './application/import-report';
 export { prepareProductImport } from './application/prepare-product-import';
 export { previewOperationalImport } from './application/preview-operational-import';
+export {
+  serializeLegacyAnalysisJson,
+  serializeLegacyAnalysisMarkdown,
+} from './application/legacy-analysis-report';
 export { DEFAULT_IMPORT_LIMITS, resolveImportLimits } from './config/import-limits';
 export { ImportFileError } from './domain/errors';
 export { SupabaseImportConfirmationRepository } from './infrastructure/supabase-import-confirmation-repository';
@@ -74,3 +79,15 @@ export type {
   ProductImportWizardRepository,
   StageProductImportPreviewInput,
 } from './domain/import-wizard-types';
+export type {
+  AnalyzeLegacyMigrationFileInput,
+  LegacyAnalysisCustodyManifest,
+  LegacyAnalysisFinding,
+  LegacyColumnMappingProposal,
+  LegacyColumnProfile,
+  LegacyMigrationAnalysis,
+  LegacySourceAnalysis,
+  LegacySourceConfiguration,
+  LegacySourceSummary,
+  LegacyTransformationProposal,
+} from './domain/legacy-analysis-types';

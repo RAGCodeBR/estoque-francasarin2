@@ -145,6 +145,34 @@ describe('regras de mapeamento e validação da migração', () => {
     });
   });
 
+  it.each([
+    ['UND', 'UN'],
+    ['UNIDADE', 'UN'],
+    ['KG', 'KG'],
+    ['KILO', 'KG'],
+  ] as const)('normaliza a unidade externa %s para %s', async (sourceUnit, expectedUnit) => {
+    const result = await runImportDryRun({
+      batchId: `batch-unit-${sourceUnit}`,
+      mapping,
+      repository: repositoryFor([
+        `SKU-${sourceUnit}`,
+        `Produto ${sourceUnit}`,
+        null,
+        null,
+        '0',
+        '0',
+        sourceUnit,
+        'Mercearia',
+        'RAW',
+      ]),
+      productLookup: emptyProducts,
+      categoryLookup: existingCategories,
+    });
+
+    expect(result.rows[0]?.normalizedData.unit).toBe(expectedUnit);
+    expect(result.rows[0]?.state).toBe('VALID');
+  });
+
   it('retorna erros estruturados com linha, campo, valor, problema e correção sugerida', async () => {
     const repository = repositoryFor([
       '001',

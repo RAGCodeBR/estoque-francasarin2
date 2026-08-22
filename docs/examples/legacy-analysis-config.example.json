@@ -1,0 +1,38 @@
+{
+  "parserOptions": {
+    "csv": {
+      "encoding": "windows-1252",
+      "delimiter": ";",
+      "headerRowNumber": 1
+    },
+    "xlsx": {
+      "headerRowNumber": 1
+    }
+  },
+  "sourceConfigurations": {
+    "CSV": {
+      "headerRowNumber": 1,
+      "columnMapping": [
+        { "sourceColumn": "COD", "targetField": "sku" },
+        { "sourceColumn": "DESCRICAO", "targetField": "name" },
+        { "sourceColumn": "EAN", "targetField": "ean" },
+        { "sourceColumn": "GRUPO", "targetField": "category" },
+        { "sourceColumn": "TIPO", "targetField": "product_type" },
+        { "sourceColumn": "UNIDADE", "targetField": "unit" },
+        { "sourceColumn": "SALDO_ATUAL", "targetField": "opening_quantity" },
+        { "sourceColumn": "MINIMO", "targetField": "minimum_quantity" },
+        { "sourceColumn": "PRECO_COMPRA", "targetField": "IGNORE" }
+      ]
+    }
+  },
+  "valueMappings": {
+    "unit": [
+      { "sourceValue": "UND", "targetValue": "UN" },
+      { "sourceValue": "KILO", "targetValue": "KG" }
+    ],
+    "productType": [
+      { "sourceValue": "BRUTO", "targetValue": "RAW" },
+      { "sourceValue": "FRACIONADO", "targetValue": "FRACTIONATED" }
+    ]
+  }
+}

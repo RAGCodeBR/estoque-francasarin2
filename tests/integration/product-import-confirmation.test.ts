@@ -4,6 +4,8 @@ import { resolve } from 'node:path';
 import { PGlite } from '@electric-sql/pglite';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
+import { inspectProductImportFile } from '../../src/modules/data-import';
+
 const migrationsDirectory = resolve(process.cwd(), 'supabase', 'migrations');
 
 const ids = {
@@ -124,6 +126,8 @@ function productData(
     externalId?: string;
     openingQuantity?: string;
     minimumQuantity?: string;
+    productType?: 'RAW' | 'FRACTIONATED';
+    unit?: 'UN' | 'KG';
   } = {},
 ): Readonly<Record<string, string | null>> {
   return {
@@ -133,9 +137,9 @@ function productData(
     external_id: options.externalId ?? null,
     opening_quantity: options.openingQuantity ?? null,
     minimum_quantity: options.minimumQuantity ?? '0.000',
-    unit: 'KG',
+    unit: options.unit ?? 'KG',
     category,
-    product_type: 'RAW',
+    product_type: options.productType ?? 'RAW',
   };
 }
 
@@ -307,26 +311,70 @@ afterAll(async () => {
 });
 
 describe('confirmação definitiva de produtos importados', () => {
-  it('promove centenas de linhas na migração inicial e repete o batch sem duplicar efeitos', async () => {
+  it('promove 600+ linhas na migração inicial e repete o batch sem duplicar efeitos', async () => {
     const categoryNames = Array.from(
       { length: 10 },
       (_, index) => `Categoria ${String(index + 1).padStart(2, '0')}`,
     );
-    const actionableRows: StagedFixtureRow[] = Array.from({ length: 200 }, (_, index) => {
-      const category = categoryNames[index % categoryNames.length] ?? 'Categoria 01';
-      return {
-        rowNumber: index + 1,
-        normalizedData: productData(
-          `MASS-${String(index + 1).padStart(4, '0')}`,
+    const csvLines = [
+      'COD;DESCRICAO;SALDO_ATUAL;UNID;GRUPO;TIPO;MINIMO;EAN;ID_EXTERNO',
+      ...Array.from({ length: 650 }, (_, index) => {
+        const number = String(index + 1).padStart(4, '0');
+        const category = categoryNames[index % categoryNames.length] ?? 'Categoria 01';
+        return [
+          `MASS-${number}`,
           `Produto em massa ${String(index + 1)}`,
+          `${String((index % 5) + 1)}.000`,
+          index % 2 === 0 ? 'KG' : 'UN',
           category,
-          {
-            ...(index === 0 ? { ean: '7894900011517' } : {}),
-            externalId: `LEGACY-${String(index + 1).padStart(4, '0')}`,
-            openingQuantity: `${String((index % 5) + 1)}.000`,
-            minimumQuantity: '1.000',
-          },
-        ),
+          index % 3 === 0 ? 'FRACIONADO' : 'BRUTO',
+          `${String(index % 7)}.000`,
+          index === 0 ? '7894900011517' : '',
+          `LEGACY-${number}`,
+        ].join(';');
+      }),
+    ];
+    const csvBytes = new TextEncoder().encode(`${csvLines.join('\r\n')}\r\n`);
+    const inspection = await inspectProductImportFile({
+      file: {
+        name: 'legacy-650-products.csv',
+        size: csvBytes.byteLength,
+        arrayBuffer: () => Promise.resolve(csvBytes.slice().buffer),
+      },
+    });
+    expect(inspection.headers).toEqual([
+      'COD',
+      'DESCRICAO',
+      'SALDO_ATUAL',
+      'UNID',
+      'GRUPO',
+      'TIPO',
+      'MINIMO',
+      'EAN',
+      'ID_EXTERNO',
+    ]);
+    expect(inspection.rows).toHaveLength(650);
+
+    const actionableRows: StagedFixtureRow[] = inspection.rows.map((parsedRow) => {
+      const sku = parsedRow.rawData.COD;
+      const name = parsedRow.rawData.DESCRICAO;
+      const category = parsedRow.rawData.GRUPO;
+      const externalId = parsedRow.rawData.ID_EXTERNO;
+      const openingQuantity = parsedRow.rawData.SALDO_ATUAL;
+      const minimumQuantity = parsedRow.rawData.MINIMO;
+      if (!sku || !name || !category || !externalId || !openingQuantity || !minimumQuantity) {
+        throw new Error(`Fixture CSV incompleta na linha ${String(parsedRow.rowNumber)}.`);
+      }
+      return {
+        rowNumber: parsedRow.rowNumber,
+        normalizedData: productData(sku, name, category, {
+          ...(parsedRow.rawData.EAN ? { ean: parsedRow.rawData.EAN } : {}),
+          externalId,
+          openingQuantity,
+          minimumQuantity,
+          productType: parsedRow.rawData.TIPO === 'FRACIONADO' ? 'FRACTIONATED' : 'RAW',
+          unit: parsedRow.rawData.UNID === 'KG' ? 'KG' : 'UN',
+        }),
         validationState: 'WARNING',
         dryRunAction: 'NEW',
         categoryCandidate: {
@@ -338,7 +386,7 @@ describe('confirmação definitiva de produtos importados', () => {
       };
     });
     const ignoredRows: StagedFixtureRow[] = Array.from({ length: 20 }, (_, index) => ({
-      rowNumber: actionableRows.length + index + 1,
+      rowNumber: actionableRows.length + index + 2,
       normalizedData: null,
       validationState: 'IGNORED',
       dryRunAction: 'IGNORED',
@@ -360,22 +408,22 @@ describe('confirmação definitiva de produtos importados', () => {
     );
     expect(first).toMatchObject({
       applied: true,
-      products_created: 200,
+      products_created: 650,
       products_associated: 0,
       categories_created: 10,
-      movements_created: 200,
+      movements_created: 650,
       lines_ignored: 20,
-      warnings: 200,
+      warnings: 650,
       errors: 0,
     });
     expect(
       await scalar(`select count(*)::text as value from public.products where sku like 'MASS-%';`),
-    ).toBe('200');
+    ).toBe('650');
     expect(
       await scalar(
         `select count(*)::text as value from public.external_entity_mappings where source_system = 'Mass Legacy';`,
       ),
-    ).toBe('200');
+    ).toBe('650');
     expect(await scalar(`select ean as value from public.products where sku = 'MASS-0001';`)).toBe(
       '7894900011517',
     );
@@ -383,12 +431,58 @@ describe('confirmação definitiva de produtos importados', () => {
       await scalar(
         `select count(*)::text as value from public.stock_movements where import_batch_id = '${ids.massBatch}';`,
       ),
-    ).toBe('200');
+    ).toBe('650');
     expect(
       await scalar(
         `select count(*)::text as value from public.import_rows where import_batch_id = '${ids.massBatch}' and promotion_action = 'CREATED';`,
       ),
-    ).toBe('200');
+    ).toBe('650');
+    expect(
+      await scalar(
+        `select count(*)::text as value
+         from public.products
+         where sku like 'MASS-%'
+           and product_type = 'FRACTIONATED'
+           and unit in ('KG', 'UN')
+           and minimum_quantity >= 0;`,
+      ),
+    ).toBe('217');
+    expect(
+      await scalar(
+        `select count(*)::text as value
+         from public.products
+         where sku like 'MASS-%'
+           and product_type = 'RAW'
+           and unit in ('KG', 'UN')
+           and minimum_quantity >= 0;`,
+      ),
+    ).toBe('433');
+    expect(
+      await scalar(
+        `select count(*)::text as value
+         from public.stock_movements movement
+         join public.stock_balances balance
+           on balance.product_id = movement.product_id
+          and balance.last_movement_id = movement.id
+         where movement.import_batch_id = '${ids.massBatch}'
+           and movement.movement_type = 'MIGRATION_OPENING_BALANCE'
+           and movement.quantity = balance.quantity;`,
+      ),
+    ).toBe('650');
+    expect(
+      await scalar(
+        `select count(*)::text as value
+         from public.stock_balances balance
+         join public.products product on product.id = balance.product_id
+         left join public.stock_movements movement on movement.id = balance.last_movement_id
+         where product.sku like 'MASS-%'
+           and (
+             movement.id is null
+             or movement.import_batch_id <> '${ids.massBatch}'
+             or movement.movement_type <> 'MIGRATION_OPENING_BALANCE'
+           );`,
+      ),
+    ).toBe('0');
     expect(
       await scalar(
         `select status::text as value from public.import_batches where id = '${ids.massBatch}';`,
@@ -407,7 +501,7 @@ describe('confirmação definitiva de produtos importados', () => {
       await scalar(
         `select count(*)::text as value from public.stock_movements where import_batch_id = '${ids.massBatch}';`,
       ),
-    ).toBe('200');
+    ).toBe('650');
   }, 60_000);
 
   it('associa produto existente e só atualiza cadastro quando a estratégia permite', async () => {

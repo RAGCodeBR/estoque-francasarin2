@@ -37,3 +37,15 @@ Estas regras valem para todo o repositório e devem ser preservadas em qualquer 
 - Migrações de banco são versionadas em `supabase/migrations`.
 - Regras críticas e transações devem ser implementadas no banco ou em backend confiável.
 - Execute `npm run lint`, `npm run typecheck`, `npm test` e `npm run build` antes de concluir alterações.
+
+## Regras permanentes de execução
+
+- Leia este `AGENTS.md` antes de alterar qualquer código.
+- Não implemente blocos futuros antecipadamente.
+- Mantenha compatibilidade com todos os blocos anteriores.
+- Sempre execute dry-run antes de uma migração definitiva.
+- Nunca realize merge automático de entidades apenas por nome semelhante.
+- A quantidade da migração inicial deve gerar `MIGRATION_OPENING_BALANCE`.
+- Reconciliações futuras devem gerar `ADJUSTMENT_POSITIVE` ou `ADJUSTMENT_NEGATIVE`.
+- Se encontrar vulnerabilidade ou problema de integridade em código anterior, corrija e documente.
+- Não avance automaticamente para o próximo bloco.

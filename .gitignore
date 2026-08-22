@@ -13,3 +13,4 @@ Thumbs.db
 supabase/.temp/
 .codex-temp/
 outputs/
+migration-evidence/

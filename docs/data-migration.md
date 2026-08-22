@@ -6,6 +6,11 @@ O sistema legado contém mais de 600 produtos, mas nomes de tabelas, colunas, ID
 tipos e formato de exportação são desconhecidos. A implementação não contém aliases de cabeçalhos
 legados e não tenta adivinhar que `COD`, `CODIGO` ou qualquer outro nome significa SKU.
 
+O procedimento operacional do Bloco 25 está detalhado em
+[`docs/real-migration-rehearsal.md`](real-migration-rehearsal.md). Ele adiciona custódia por SHA-256,
+cópia somente leitura, inventário de todas as planilhas, análise de qualidade e propostas não
+aplicadas de ColumnMapping/ValueMapping antes de qualquer staging.
+
 O Bloco 2 implementa leitura, descoberta de cabeçalhos, staging e dry-run. O Bloco 3 amplia esse
 domínio com ValueMapping configurável, validação estruturada, categorias candidatas, identificação
 segura de produtos e uma barreira de confirmação. O Bloco 5 fornece o motor de estoque e o Bloco 6
